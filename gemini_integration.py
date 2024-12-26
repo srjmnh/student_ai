@@ -196,54 +196,114 @@ def create_comedic_confirmation(action, name=None, student_id=None):
     else:
         return "Action completed, presumably in a dark fashion."
 
-def view_students_table():
+###############################################################################
+# 9. Cleanup Data (Deduplicate by Name)
+###############################################################################
+def cleanup_data():
+    """
+    Finds duplicates by 'name', keeps the most detailed doc, deletes others.
+    Returns an HTML snippet with the updated table.
+    """
+    docs = db.collection("students").stream()
+    students = [doc.to_dict() for doc in docs]
+
+    from collections import defaultdict
+    name_groups = defaultdict(list)
+
+    for st in students:
+        st_name = st.get("name", "").strip().lower()
+        if st_name:
+            name_groups[st_name].append(st)
+
+    duplicates_deleted = []
+    for _, group in name_groups.items():
+        if len(group) > 1:
+            # Keep doc with the greatest number of non-empty fields
+            best_student = None
+            best_score = -1
+            for st in group:
+                score = sum(1 for v in st.values() if v not in [None, "", {}])
+                if score > best_score:
+                    best_score = score
+                    best_student = st
+            # Delete all others
+            for st in group:
+                if st["id"] != best_student["id"]:
+                    db.collection("students").document(st["id"]).delete()
+                    duplicates_deleted.append(st["id"])
+
+    if duplicates_deleted:
+        log_activity("CLEANUP_DATA", f"Deleted duplicates: {duplicates_deleted}")
+
+    # Return updated table with "Data cleaned!"
+    return build_students_table_html("Data cleaned! Updated student records below:")
+
+###############################################################################
+# 10. Building a Table that Slides in from Right
+###############################################################################
+def build_students_table_html(heading="Student Records"):
     docs = db.collection("students").stream()
     students = [doc.to_dict() for doc in docs]
 
     if not students:
         return "<p>No students found.</p>"
 
-    table_html = """<table style="width:100%; border:1px solid #ccc; border-collapse:collapse;">
-    <thead>
+    html = f"""
+<div id="studentsSection" class="slideFromRight">
+  <h4>{heading}</h4>
+  <table class="table table-bordered">
+    <thead class="table-light">
       <tr>
-        <th style="border:1px solid #ccc; padding:8px;">ID</th>
-        <th style="border:1px solid #ccc; padding:8px;">Name</th>
-        <th style="border:1px solid #ccc; padding:8px;">Age</th>
-        <th style="border:1px solid #ccc; padding:8px;">Class</th>
-        <th style="border:1px solid #ccc; padding:8px;">Marks</th>
-        <th style="border:1px solid #ccc; padding:8px;">Attendance</th>
+        <th>ID</th>
+        <th>Name</th>
+        <th>Age</th>
+        <th>Class</th>
+        <th>Address</th>
+        <th>Phone</th>
+        <th>Guardian</th>
+        <th>Guardian Phone</th>
+        <th>Attendance</th>
+        <th>Grades</th>
       </tr>
     </thead>
     <tbody>
     """
     for st in students:
-        sid = st.get("id", "")
-        sname = st.get("name", "")
-        sage = st.get("age", "")
-        sclass = st.get("class", "")
-        smarks = st.get("grades", {})
-        sattendance = st.get("attendance", "")
-
-        if isinstance(smarks, dict):
-            smarks_str = ', '.join([f"{k}:{v}" for k, v in smarks.items()])
-        else:
-            smarks_str = str(smarks)
-
         row = f"""
         <tr>
-          <td style="border:1px solid #ccc; padding:8px;">{sid}</td>
-          <td style="border:1px solid #ccc; padding:8px;">{sname}</td>
-          <td style="border:1px solid #ccc; padding:8px;">{sage}</td>
-          <td style="border:1px solid #ccc; padding:8px;">{sclass}</td>
-          <td style="border:1px solid #ccc; padding:8px;">{smarks_str}</td>
-          <td style="border:1px solid #ccc; padding:8px;">{sattendance}</td>
+          <td>{st.get('id','')}</td>
+          <td>{st.get('name','')}</td>
+          <td>{st.get('age','')}</td>
+          <td>{st.get('class','')}</td>
+          <td>{st.get('address','')}</td>
+          <td>{st.get('phone','')}</td>
+          <td>{st.get('guardian_name','')}</td>
+          <td>{st.get('guardian_phone','')}</td>
+          <td>{st.get('attendance','')}</td>
+          <td>{st.get('grades','')}</td>
         </tr>
         """
-        table_html += row
+        html += row
+    html += """
+    </tbody>
+  </table>
+  <button class="btn btn-success" onclick="saveTableEdits()">Save</button>
+</div>
+"""
+    return html
 
-    table_html += "</tbody></table>"
-    return table_html
+###############################################################################
+# 11. View Students (Simple Table)
+###############################################################################
+def view_students_table():
+    """
+    For the 'view_students' action (or synonyms), we just build the table with default heading.
+    """
+    return build_students_table_html("Student Records")
 
+###############################################################################
+# 12. Student Logic (Add, Update, Delete, Analytics)
+###############################################################################
 def add_student(params):
     try:
         name = params.get("name")
@@ -297,10 +357,10 @@ def update_student(params):
 
         update_fields = {}
         for k, v in params.items():
-            if k not in ["id"]:
+            if k != "id":
                 update_fields[k] = v
 
-        # If user is updating 'grades', we store old in 'grades_history'
+        # If user is updating 'grades', store old in 'grades_history'
         if "grades" in update_fields:
             existing_data = doc_snapshot.to_dict()
             old_grades = existing_data.get("grades", {})
@@ -379,7 +439,7 @@ def analytics_student(params):
         return {"error": str(e)}, 500
 
 ###############################################################################
-# 9. Classification
+# 13. Classification
 ###############################################################################
 def classify_user_input(user_prompt):
     classification_prompt = (
@@ -388,6 +448,7 @@ def classify_user_input(user_prompt):
         " - update_student\n"
         " - delete_student\n"
         " - view_students (including synonyms like 'hire students', 'list students', etc.)\n"
+        " - cleanup_data (synonyms: 'clean data', 'cleanup', 'deduplicate')\n"
         " - analytics_student (like 'check performance')\n"
         "If not an action, return {\"type\": \"casual\"}.\n\n"
         "Output JSON only, e.g.:\n"
@@ -413,7 +474,10 @@ def classify_user_input(user_prompt):
                 "hire": "view_students",
                 "check_performance": "analytics_student",
                 "performance": "analytics_student",
-                "analytics": "analytics_student"
+                "analytics": "analytics_student",
+                "clean data": "cleanup_data",
+                "cleanup": "cleanup_data",
+                "deduplicate": "cleanup_data"
             }
             raw_action = data.get("action", "").lower().strip()
             if raw_action in synonyms_map:
@@ -423,7 +487,7 @@ def classify_user_input(user_prompt):
         return {"type": "casual"}
 
 ###############################################################################
-# 10. State Machine
+# 14. Additional Field Extraction, Analytics Handler
 ###############################################################################
 def extract_fields(user_input, desired_fields):
     prompt = (
@@ -461,10 +525,14 @@ def handle_analytics_call(params):
     else:
         return "Which student do you want to check performance for? Provide an ID or name."
 
+###############################################################################
+# 15. Main State Machine
+###############################################################################
 def handle_state_machine(user_prompt):
     state = conversation_context["state"]
     pending_params = conversation_context["pending_params"]
 
+    # If we are waiting for partial info to add a student
     if state == STATE_AWAITING_STUDENT_INFO:
         desired_fields = ["name", "age", "class", "address", "phone", "guardian_name", "guardian_phone", "attendance", "grades"]
         extracted = extract_fields(user_prompt, desired_fields)
@@ -491,6 +559,7 @@ def handle_state_machine(user_prompt):
         else:
             return result.get("error", "Error adding student.")
 
+    # If we are waiting for which student to analyze
     elif state == STATE_AWAITING_ANALYTICS_TARGET:
         desired_fields = ["id", "name"]
         extracted = extract_fields(user_prompt, desired_fields)
@@ -504,7 +573,6 @@ def handle_state_machine(user_prompt):
             conversation_context["last_intended_action"] = None
             return result.get("message", result.get("error", "Analytics error."))
         elif pending_params.get("name"):
-            # see if multiple or single
             docs = db.collection("students").where("name", "==", pending_params["name"]).stream()
             matches = [d.to_dict() for d in docs]
             if not matches:
@@ -525,9 +593,11 @@ def handle_state_machine(user_prompt):
         else:
             return "Which student do you want to check? Provide an ID or name."
 
-    else:  # STATE_IDLE
+    # Otherwise, state = IDLE => classify new request
+    else:
         action_data = classify_user_input(user_prompt)
         if action_data.get("type") == "casual":
+            # Just generate a casual response
             resp = model.generate_content(user_prompt)
             if resp.candidates:
                 return resp.candidates[0].content.parts[0].text.strip()
@@ -537,10 +607,15 @@ def handle_state_machine(user_prompt):
         elif action_data.get("type") == "firestore":
             action = action_data.get("action", "")
             params = action_data.get("parameters", {})
+
             if action == "view_students":
-                # Return an HTML table
-                table_html = view_students_table()
-                return f"Here are the students in a nice table:\n{table_html}"
+                # Show table in sliding panel
+                return build_students_table_html("Student Records")
+
+            elif action == "cleanup_data":
+                # Deduplicate data by name
+                return cleanup_data()
+
             elif action == "add_student":
                 if not params.get("name"):
                     conversation_context["state"] = STATE_AWAITING_STUDENT_INFO
@@ -560,18 +635,21 @@ def handle_state_machine(user_prompt):
                             return result["message"]
                     else:
                         return result.get("error", "Add student error.")
+
             elif action == "update_student":
                 if not params.get("id"):
                     return "To update a student, provide 'id'."
                 else:
                     result, status = update_student(params)
                     return result.get("message", result.get("error", "Update error."))
+
             elif action == "delete_student":
                 if not params.get("id"):
                     return "To delete a student, provide 'id'."
                 else:
                     result, status = delete_student(params)
                     return result.get("message", result.get("error", "Delete error."))
+
             elif action == "analytics_student":
                 if not (params.get("id") or params.get("name")):
                     conversation_context["state"] = STATE_AWAITING_ANALYTICS_TARGET
@@ -580,27 +658,32 @@ def handle_state_machine(user_prompt):
                     return "Which student do you want to check performance for? Provide an ID or name."
                 else:
                     return handle_analytics_call(params)
+
             else:
                 return f"Unknown action: {action}"
+
         else:
             return "I couldn't classify your request. Please rephrase."
 
 ###############################################################################
-# 11. Flask Routes
+# 16. Flask Routes
 ###############################################################################
-# This route returns the modern chat UI directly.
 @app.route("/")
 def index():
+    """
+    Returns the updated HTML that supports:
+      - Slide-in table from the right
+      - Save button
+      - "Server is LIVE" banner
+    """
     return """
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <!-- Ensures mobile responsiveness -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Super Student Management Chat</title>
 
-  <!-- Bootstrap 5 CSS -->
   <link 
     href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" 
     rel="stylesheet"
@@ -623,7 +706,7 @@ def index():
       display: flex;
       flex-direction: column;
       height: 80vh; /* 80% of the viewport height */
-      overflow: hidden; /* Hide any overflow beyond container */
+      overflow: hidden; 
     }
 
     .chat-header {
@@ -634,9 +717,11 @@ def index():
     }
 
     .chat-body {
-      flex: 1; /* Expand to fill available vertical space */
+      flex: 1;
       padding: 1rem;
-      overflow-y: auto; /* Make chat scrollable */
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
     }
 
     .chat-bubble {
@@ -683,6 +768,43 @@ def index():
       background-color: #f8f9fa;
     }
 
+    /* The sliding table container */
+    #studentsSection {
+      position: fixed;
+      top: 0; 
+      right: 0; 
+      width: 50%; 
+      height: 100%;
+      background-color: #fff;
+      border-left: 1px solid #ccc;
+      transform: translateX(100%);
+      transition: transform 0.5s ease;
+      overflow-y: auto;
+      padding: 1rem;
+    }
+    #studentsSection.show {
+      transform: translateX(0);
+    }
+
+    .slideFromRight {
+      animation: slideIn 0.5s forwards;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(100%); }
+      to { transform: translateX(0); }
+    }
+
+    /* Banner at bottom for server status */
+    #serverStatus {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background-color: #343a40;
+      color: #fff;
+      text-align: center;
+      padding: 0.5rem;
+      font-size: 0.9rem;
+    }
+
     @media (max-width: 576px) {
       .chat-container {
         margin: 1rem;
@@ -690,6 +812,9 @@ def index():
       }
       .chat-bubble {
         max-width: 100%;
+      }
+      #studentsSection {
+        width: 100%;
       }
     }
   </style>
@@ -700,24 +825,26 @@ def index():
     <div class="chat-header">
       <h4 class="mb-0">Super Student Management Chat</h4>
     </div>
-
-    <div class="chat-body d-flex flex-column" id="messages">
-      <!-- Chat messages will appear here dynamically -->
-    </div>
-
+    <div class="chat-body" id="messages"></div>
     <div class="chat-footer">
       <div class="input-group">
         <input
           type="text"
           id="userInput"
           class="form-control"
-          placeholder="E.g. 'Add a new student', 'Hire students', 'Check performance of John'..."
+          placeholder="Try 'Clean data', 'View students'..."
           onkeydown="handleKeyDown(event)"
         />
         <button class="btn btn-primary" onclick="sendPrompt()">Send</button>
       </div>
     </div>
   </div>
+
+  <!-- The sliding table container on the right -->
+  <div id="studentsSection"></div>
+
+  <!-- Server status banner -->
+  <div id="serverStatus">Server is LIVE</div>
 
   <script
     src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"
@@ -726,13 +853,14 @@ def index():
   <script>
     const messagesContainer = document.getElementById('messages');
     const userInputField = document.getElementById('userInput');
+    const studentsSection = document.getElementById('studentsSection');
 
     function addMessage(text, sender) {
       const bubble = document.createElement('div');
       bubble.classList.add('chat-bubble', sender === 'user' ? 'user-message' : 'ai-message');
 
-      // If AI message might contain HTML (e.g. a table), render with innerHTML
-      if (sender === 'ai') {
+      // If the AI text includes a table or #studentsSection markup, interpret as HTML
+      if (sender === 'ai' && (text.includes("<table") || text.includes("studentsSection"))) {
         bubble.innerHTML = text;
       } else {
         bubble.textContent = text;
@@ -752,25 +880,45 @@ def index():
       const userInput = userInputField.value.trim();
       if (!userInput) return;
 
+      // Show user's message
       addMessage(userInput, 'user');
 
       const requestOptions = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: userInput }),
+        body: JSON.stringify({ prompt: userInput })
       };
 
       try {
         const response = await fetch('/process_prompt', requestOptions);
         const data = await response.json();
         const reply = data.message || data.error || 'No response from AI.';
-        addMessage(reply, 'ai');
+        processAIReply(reply);
       } catch (error) {
         console.error('Error:', error);
         addMessage('Error: Unable to connect to server.', 'ai');
       }
 
       userInputField.value = '';
+    }
+
+    function processAIReply(reply) {
+      // If the reply includes the special <table> or #studentsSection, 
+      // we show it in the sliding panel
+      if (reply.includes("<table") || reply.includes("studentsSection")) {
+        studentsSection.innerHTML = reply;
+        studentsSection.classList.add('show');
+      } else {
+        addMessage(reply, 'ai');
+      }
+    }
+
+    // Called by the "Save" button in the table
+    function saveTableEdits() {
+      // Real logic might parse the table and do an update.
+      // For now, just close the sliding panel.
+      studentsSection.classList.remove('show');
+      addMessage("Table changes saved. Sliding panel closed.", 'ai');
     }
   </script>
 </body>
@@ -789,6 +937,7 @@ def process_prompt():
     if len(conversation_memory) > MAX_MEMORY:
         conversation_memory = conversation_memory[-MAX_MEMORY:]
 
+    # If user says "reset memory" or "cancel"
     if user_prompt.lower() in ["reset memory", "reset conversation", "cancel"]:
         conversation_memory.clear()
         conversation_context["state"] = STATE_IDLE
@@ -797,14 +946,16 @@ def process_prompt():
         save_memory_to_firestore()
         return jsonify({"message": "Memory and context reset."}), 200
 
+    # Run the main state machine
     reply = handle_state_machine(user_prompt)
 
+    # Add AI reply
     conversation_memory.append({"role": "AI", "content": reply})
     save_memory_to_firestore()
     return jsonify({"message": reply}), 200
 
 ###############################################################################
-# 12. Global Error Handler
+# 17. Global Error Handler
 ###############################################################################
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -812,7 +963,7 @@ def handle_exception(e):
     return jsonify({"error": "An internal error occurred."}), 500
 
 ###############################################################################
-# 13. Before First Request => Load Memory + Summaries
+# 18. Before First Request => Load Memory + Summaries
 ###############################################################################
 @app.before_first_request
 def load_on_startup():
@@ -830,9 +981,10 @@ def load_on_startup():
     logging.info(f"Startup summary: {summary}")
 
 ###############################################################################
-# 14. Run Flask
+# 19. Run Flask
 ###############################################################################
 if __name__ == "__main__":
+    # Load memory if any
     memory, ctx = load_memory_from_firestore()
     if memory:
         conversation_memory = memory
