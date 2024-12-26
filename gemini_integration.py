@@ -105,6 +105,7 @@ def log_activity(action_type, details):
             "details": details,
             "timestamp": firestore.SERVER_TIMESTAMP
         })
+        logging.info(f"✅ Logged activity: {action_type}, details={details}")
     except Exception as e:
         logging.error(f"❌ Failed to log activity: {e}")
 
@@ -150,13 +151,10 @@ def remove_code_fences(text: str) -> str:
         return match.group(1).strip()
     return text
 
-###############################################################################
-# 8. Firestore Helper Functions
-###############################################################################
 def _safe_int(value):
     """
     Attempt to parse value as int. If it's already int, use it.
-    If it fails, return None (avoid 'int' object has no attribute 'isdigit').
+    If it fails, return None.
     """
     if value is None:
         return None
@@ -166,58 +164,58 @@ def _safe_int(value):
         return int(value)
     return None
 
-def generate_student_id(name, age):
-    random_number = random.randint(1000, 9999)
-    name_part = (name[:4] if len(name) >= 4 else name).upper()
-    age_str = str(age) if age else "00"
-    return f"{name_part}{age_str}{random_number}"
+###############################################################################
+# 8. Bulk Update for Table Editing
+###############################################################################
+def bulk_update_students(student_list):
+    """
+    Receives a list of dicts, each with at least {id: "...", name: "...", etc.}
+    We'll update each student's doc in Firestore with these fields.
+    """
+    updated_ids = []
+    for st in student_list:
+        sid = st.get("id")
+        if not sid:
+            continue
+        doc_ref = db.collection("students").document(sid)
+        snapshot = doc_ref.get()
+        if not snapshot.exists:
+            logging.warning(f"Document not found for ID {sid}")
+            continue
 
-def create_funny_prompt_for_new_student(name):
-    return (
-        f"Write a short witty statement acknowledging we have a new student '{name}'. "
-        "Ask the user if they have any additional details they'd like to add, such as marks or attendance. "
-        "Keep it under 40 words, with a slightly humorous twist."
-    )
+        # Build update fields
+        fields_to_update = {}
+        for k, v in st.items():
+            if k == "id":
+                continue
+            if k == "age":
+                fields_to_update["age"] = _safe_int(v)
+            else:
+                fields_to_update[k] = v
+        doc_ref.update(fields_to_update)
+        updated_ids.append(sid)
 
-def create_comedic_confirmation(action, name=None, student_id=None):
-    if action == "add_student":
-        prompt = f"Generate a short, darkly funny success message confirming the addition of {name} (ID: {student_id})."
-    elif action == "update_student":
-        prompt = f"Create a short, darkly funny message confirming the update of student ID {student_id}."
-    elif action == "delete_student":
-        prompt = f"Create a short, darkly funny message confirming the deletion of student ID {student_id}."
-    else:
-        prompt = "A cryptic success message with an ominous twist."
-
-    resp = model.generate_content(prompt)
-    if resp.candidates:
-        return resp.candidates[0].content.parts[0].text.strip()[:100]
-    else:
-        return "Action completed, presumably in a dark fashion."
+    if updated_ids:
+        log_activity("BULK_UPDATE", f"Updated IDs: {updated_ids}")
+    return updated_ids
 
 ###############################################################################
-# 9. Cleanup Data (Deduplicate by Name)
+# 9. Cleanup Data (Deduplicate)
 ###############################################################################
 def cleanup_data():
-    """
-    Finds duplicates by 'name', keeps the most detailed doc, deletes others.
-    Returns an HTML snippet with the updated table.
-    """
     docs = db.collection("students").stream()
     students = [doc.to_dict() for doc in docs]
 
     from collections import defaultdict
     name_groups = defaultdict(list)
-
     for st in students:
         st_name = st.get("name", "").strip().lower()
         if st_name:
             name_groups[st_name].append(st)
 
     duplicates_deleted = []
-    for _, group in name_groups.items():
+    for name_val, group in name_groups.items():
         if len(group) > 1:
-            # Keep doc with the greatest number of non-empty fields
             best_student = None
             best_score = -1
             for st in group:
@@ -225,20 +223,18 @@ def cleanup_data():
                 if score > best_score:
                     best_score = score
                     best_student = st
-            # Delete all others
             for st in group:
                 if st["id"] != best_student["id"]:
                     db.collection("students").document(st["id"]).delete()
                     duplicates_deleted.append(st["id"])
 
     if duplicates_deleted:
-        log_activity("CLEANUP_DATA", f"Deleted duplicates: {duplicates_deleted}")
+        log_activity("CLEANUP_DATA", f"Deleted dups: {duplicates_deleted}")
 
-    # Return updated table with "Data cleaned!"
     return build_students_table_html("Data cleaned! Updated student records below:")
 
 ###############################################################################
-# 10. Building a Table that Slides in from Right
+# 10. Building an Editable Table that Slides
 ###############################################################################
 def build_students_table_html(heading="Student Records"):
     docs = db.collection("students").stream()
@@ -247,61 +243,70 @@ def build_students_table_html(heading="Student Records"):
     if not students:
         return "<p>No students found.</p>"
 
-    html = f"""
+    # Each row => data-id for Firestore doc
+    # We make each field (except ID) contenteditable
+    # If 'grades' is a dict, we convert to JSON string
+    table_html = f"""
 <div id="studentsSection" class="slideFromRight">
   <h4>{heading}</h4>
-  <table class="table table-bordered">
+  <table class="table table-bordered table-sm">
     <thead class="table-light">
       <tr>
         <th>ID</th>
-        <th>Name</th>
-        <th>Age</th>
-        <th>Class</th>
-        <th>Address</th>
-        <th>Phone</th>
-        <th>Guardian</th>
-        <th>Guardian Phone</th>
-        <th>Attendance</th>
-        <th>Grades</th>
+        <th contenteditable="false" style="min-width:80px;">Name</th>
+        <th contenteditable="false">Age</th>
+        <th contenteditable="false">Class</th>
+        <th contenteditable="false">Address</th>
+        <th contenteditable="false">Phone</th>
+        <th contenteditable="false">Guardian</th>
+        <th contenteditable="false">Guardian Phone</th>
+        <th contenteditable="false">Attendance</th>
+        <th contenteditable="false">Grades</th>
       </tr>
     </thead>
     <tbody>
     """
     for st in students:
-        row = f"""
-        <tr>
-          <td>{st.get('id','')}</td>
-          <td>{st.get('name','')}</td>
-          <td>{st.get('age','')}</td>
-          <td>{st.get('class','')}</td>
-          <td>{st.get('address','')}</td>
-          <td>{st.get('phone','')}</td>
-          <td>{st.get('guardian_name','')}</td>
-          <td>{st.get('guardian_phone','')}</td>
-          <td>{st.get('attendance','')}</td>
-          <td>{st.get('grades','')}</td>
+        sid = st.get("id","")
+        name = st.get("name","")
+        age = st.get("age","")
+        sclass = st.get("class","")
+        address = st.get("address","")
+        phone = st.get("phone","")
+        guardian_name = st.get("guardian_name","")
+        guardian_phone = st.get("guardian_phone","")
+        attendance = st.get("attendance","")
+        grades = st.get("grades","")
+
+        # If grades is dict, convert to JSON string
+        if isinstance(grades, dict):
+            grades = json.dumps(grades)
+
+        row_html = f"""
+        <tr data-id="{sid}">
+          <td style="color:#555; user-select:none;">{sid}</td>
+          <td contenteditable="true">{name}</td>
+          <td contenteditable="true">{age}</td>
+          <td contenteditable="true">{sclass}</td>
+          <td contenteditable="true">{address}</td>
+          <td contenteditable="true">{phone}</td>
+          <td contenteditable="true">{guardian_name}</td>
+          <td contenteditable="true">{guardian_phone}</td>
+          <td contenteditable="true">{attendance}</td>
+          <td contenteditable="true">{grades}</td>
         </tr>
         """
-        html += row
-    html += """
+        table_html += row_html
+    table_html += """
     </tbody>
   </table>
   <button class="btn btn-success" onclick="saveTableEdits()">Save</button>
 </div>
 """
-    return html
+    return table_html
 
 ###############################################################################
-# 11. View Students (Simple Table)
-###############################################################################
-def view_students_table():
-    """
-    For the 'view_students' action (or synonyms), we just build the table with default heading.
-    """
-    return build_students_table_html("Student Records")
-
-###############################################################################
-# 12. Student Logic (Add, Update, Delete, Analytics)
+# 11. Student Logic (Add, Update, Delete, Analytics) 
 ###############################################################################
 def add_student(params):
     try:
@@ -318,9 +323,9 @@ def add_student(params):
         attendance = params.get("attendance")
         grades = params.get("grades") or {}
 
-        student_id = generate_student_id(name, age)
-        student_data = {
-            "id": student_id,
+        sid = generate_student_id(name, age)
+        student_doc = {
+            "id": sid,
             "name": name,
             "age": age,
             "class": sclass,
@@ -332,651 +337,552 @@ def add_student(params):
             "grades": grades,
             "grades_history": []
         }
+        db.collection("students").document(sid).set(student_doc)
+        log_activity("ADD_STUDENT", f"Added {name} (ID {sid}).")
 
-        db.collection("students").document(student_id).set(student_data)
-        log_activity("ADD_STUDENT", f"Added {name} (ID {student_id}).")
-
-        confirmation = create_comedic_confirmation("add_student", name, student_id)
-        return {"message": f"{confirmation} (ID: {student_id})"}, 200
-
+        confirm_msg = create_comedic_confirmation("add_student", name, sid)
+        return {"message": f"{confirm_msg} (ID: {sid})"}, 200
     except Exception as e:
-        logging.error(f"❌ Error in add_student: {e}")
+        logging.error(f"Error in add_student: {e}")
         return {"error": str(e)}, 500
 
 def update_student(params):
     try:
-        student_id = params.get("id")
-        if not student_id:
-            return {"error": "Missing student 'id' for update."}, 400
+        sid = params.get("id")
+        if not sid:
+            return {"error": "Missing student 'id'."}, 400
 
-        doc_ref = db.collection("students").document(student_id)
-        doc_snapshot = doc_ref.get()
-        if not doc_snapshot.exists:
-            return {"error": f"No student with id {student_id} found."}, 404
+        doc_ref = db.collection("students").document(sid)
+        snap = doc_ref.get()
+        if not snap.exists:
+            return {"error": f"No doc with id {sid} found."}, 404
 
         update_fields = {}
-        for k, v in params.items():
-            if k != "id":
-                update_fields[k] = v
-
-        # If user is updating 'grades', store old in 'grades_history'
-        if "grades" in update_fields:
-            existing_data = doc_snapshot.to_dict()
-            old_grades = existing_data.get("grades", {})
-            new_grades_entry = {
-                "old_grades": old_grades,
-                "new_grades": update_fields["grades"],
-                "timestamp": firestore.SERVER_TIMESTAMP
-            }
-            if "grades_history" not in existing_data:
-                existing_data["grades_history"] = []
-            existing_data["grades_history"].append(new_grades_entry)
-            update_fields["grades_history"] = existing_data["grades_history"]
+        for k,v in params.items():
+            if k=="id": 
+                continue
+            if k=="grades":
+                old_grades = snap.to_dict().get("grades",{})
+                # store in grades_history 
+                new_entry = {
+                    "old_grades": old_grades,
+                    "new_grades": v,
+                    "timestamp": firestore.SERVER_TIMESTAMP
+                }
+                hist = snap.to_dict().get("grades_history",[])
+                hist.append(new_entry)
+                update_fields["grades_history"] = hist
+            update_fields[k] = v
 
         doc_ref.update(update_fields)
-        log_activity("UPDATE_STUDENT", f"Updated {student_id} with {update_fields}")
+        log_activity("UPDATE_STUDENT", f"Updated {sid} with {update_fields}")
 
-        confirmation = create_comedic_confirmation("update_student", student_id=student_id)
-        return {"message": confirmation}, 200
-
+        cmsg = create_comedic_confirmation("update_student", student_id=sid)
+        return {"message": cmsg}, 200
     except Exception as e:
-        logging.error(f"❌ Error in update_student: {e}")
-        return {"error": str(e)}, 500
+        logging.error(f"update_student error: {e}")
+        return {"error":str(e)},500
 
 def delete_student(params):
     try:
-        student_id = params.get("id")
-        if not student_id:
-            return {"error": "Missing student 'id' for deletion."}, 400
-
-        doc_ref = db.collection("students").document(student_id)
+        sid = params.get("id")
+        if not sid:
+            return {"error": "Missing 'id' to delete."}, 400
+        doc_ref = db.collection("students").document(sid)
         if not doc_ref.get().exists:
-            return {"error": f"No student with id {student_id} found."}, 404
+            return {"error": f"No doc with id {sid} found."}, 404
 
         doc_ref.delete()
-        log_activity("DELETE_STUDENT", f"Deleted student ID {student_id}")
+        log_activity("DELETE_STUDENT", f"Deleted {sid}")
 
-        confirmation = create_comedic_confirmation("delete_student", student_id=student_id)
-        return {"message": confirmation}, 200
-
+        cmsg = create_comedic_confirmation("delete_student", student_id=sid)
+        return {"message": cmsg}, 200
     except Exception as e:
-        logging.error(f"❌ Error in delete_student: {e}")
-        return {"error": str(e)}, 500
+        logging.error(f"delete_student error: {e}")
+        return {"error":str(e)},500
 
 def analytics_student(params):
     try:
-        student_id = params.get("id")
-        if not student_id:
-            return {"error": "Missing 'id' to analyze student."}, 400
+        sid = params.get("id")
+        if not sid:
+            return {"error": "Missing 'id' for analytics."},400
+        snap = db.collection("students").document(sid).get()
+        if not snap.exists:
+            return {"error":f"No doc with id {sid}."},404
 
-        doc_snapshot = db.collection("students").document(student_id).get()
-        if not doc_snapshot.exists:
-            return {"error": f"No student with id {student_id} found."}, 404
+        data = snap.to_dict()
+        hist = data.get("grades_history",[])
+        if not hist:
+            return {"message":f"No historical grades for {data['name']}."},200
 
-        data = doc_snapshot.to_dict()
-        grades_history = data.get("grades_history", [])
-        if len(grades_history) < 1:
-            return {"message": f"No historical grades found for {data['name']}."}, 200
-
-        def avg_marks(grades):
-            if not grades:
+        def avg_marks(grds):
+            if not isinstance(grds, dict):
                 return 0
-            vals = [v for v in grades.values() if isinstance(v, (int, float))]
-            return sum(vals) / len(vals) if vals else 0
+            vals = [val for val in grds.values() if isinstance(val,(int,float))]
+            if not vals: return 0
+            return sum(vals)/len(vals)
 
-        oldest = grades_history[0]["old_grades"]
-        newst = grades_history[-1]["new_grades"]
-        old_avg = avg_marks(oldest)
-        new_avg = avg_marks(newst)
-        trend = "improved" if new_avg > old_avg else "declined" if new_avg < old_avg else "stayed the same"
+        oldest = hist[0]["old_grades"]
+        newest= hist[-1]["new_grades"]
+        old_avg= avg_marks(oldest)
+        new_avg= avg_marks(newest)
+        trend= "improved" if new_avg>old_avg else "declined" if new_avg<old_avg else "stayed the same"
 
-        message = f"{data['name']}'s performance has {trend}. Old avg={old_avg:.2f}, new avg={new_avg:.2f}."
-        return {"message": message}, 200
-
+        msg= f"{data['name']}'s performance has {trend}. old={old_avg}, new={new_avg}"
+        return {"message":msg},200
     except Exception as e:
-        logging.error(f"❌ Error in analytics_student: {e}")
-        return {"error": str(e)}, 500
+        logging.error(f"analytics_student error: {e}")
+        return {"error":str(e)},500
 
 ###############################################################################
-# 13. Simple Classification for "Casual" vs. "Firestore"
+# 12. Classification for "Casual" vs "Firestore"
 ###############################################################################
 def classify_casual_or_firestore(user_prompt):
-    """
-    Use Gemini to decide if the user prompt is a casual conversation
-    or a Firestore action.
-    We'll return JSON like:
-    {
-      "type": "casual"
-    }
-    or
-    {
-      "type": "firestore",
-      "action": "add_student",
-      "parameters": {...}
-    }
-    If it can't parse, we treat it as casual.
-    """
     classification_prompt = (
-        "You are an advanced assistant that ONLY decides if a user request is "
-        "casual conversation or Firestore action.\n\n"
-        "If casual, return: {\"type\":\"casual\"}\n"
-        "If firestore, return a JSON object with \"type\":\"firestore\", an \"action\" key, and a \"parameters\" object.\n"
+        "You are an advanced assistant that decides if the user prompt is casual conversation or a Firestore operation.\n"
+        "If casual => {\"type\":\"casual\"}\n"
+        "If firestore => {\"type\":\"firestore\",\"action\":\"...\",\"parameters\":{...}}\n"
         "Allowed actions: add_student, update_student, delete_student, view_students, cleanup_data, analytics_student.\n"
-        "Synonyms:\n"
-        "- 'view students', 'show all students', 'list students' => view_students\n"
-        "- 'cleanup data', 'clean data', 'deduplicate' => cleanup_data\n"
-        "- 'performance', 'check performance' => analytics_student\n"
-        "- 'hire students' => view_students\n\n"
-        f"User Prompt: '{user_prompt}'\n"
-        "Output JSON only, no code fences."
+        f"User Prompt:'{user_prompt}'\n"
+        "Output JSON only."
     )
     resp = model.generate_content(classification_prompt)
     if not resp.candidates:
-        return {"type": "casual"}
-
-    raw = resp.candidates[0].content.parts[0].text.strip()
-    raw = remove_code_fences(raw)
+        return {"type":"casual"}
+    raw= resp.candidates[0].content.parts[0].text.strip()
+    raw= remove_code_fences(raw)
     try:
-        data = json.loads(raw)
-        # Force "type" if missing
+        data= json.loads(raw)
         if "type" not in data:
-            data["type"] = "casual"
+            data["type"]="casual"
         return data
-    except (json.JSONDecodeError, ValueError):
-        return {"type": "casual"}
+    except:
+        return {"type":"casual"}
 
 ###############################################################################
-# 14. Additional Field Extraction, Analytics Handler
+# 13. Additional Field Extraction
 ###############################################################################
 def extract_fields(user_input, desired_fields):
     prompt = (
-        f"You are an assistant that extracts fields from user input. "
-        f"Fields: {', '.join(desired_fields)}.\n"
-        f"User Input: '{user_input}'\n\n"
-        "Return JSON with only these fields if found. No code fences."
+        f"You are an assistant that extracts fields from user input.\n"
+        f"Fields: {', '.join(desired_fields)}\n"
+        f"User Input:'{user_input}'\n"
+        "Return JSON with only those fields.\n"
     )
-    resp = model.generate_content(prompt)
-    if resp.candidates:
-        content = ''.join(part.text for part in resp.candidates[0].content.parts).strip()
-        content = remove_code_fences(content)
-        try:
-            return json.loads(content)
-        except:
-            return {}
-    return {}
+    resp= model.generate_content(prompt)
+    if not resp.candidates:
+        return {}
+    raw= ''.join(part.text for part in resp.candidates[0].content.parts).strip()
+    raw= remove_code_fences(raw)
+    try:
+        return json.loads(raw)
+    except:
+        return {}
 
+###############################################################################
+# 14. Analytics Helper
+###############################################################################
 def handle_analytics_call(params):
     if params.get("id"):
-        result, status = analytics_student(params)
-        return result.get("message", result.get("error", "Analytics error."))
+        out,stat= analytics_student(params)
+        return out.get("message", out.get("error","Analytics error."))
     elif params.get("name"):
-        docs = db.collection("students").where("name", "==", params["name"]).stream()
-        matches = [d.to_dict() for d in docs]
+        # find doc by name
+        docs= db.collection("students").where("name","==",params["name"]).stream()
+        matches= [d.to_dict() for d in docs]
         if not matches:
-            return f"No student found with name {params['name']}."
-        if len(matches) == 1:
-            params["id"] = matches[0]["id"]
-            result, status = analytics_student(params)
-            return result.get("message", result.get("error", "Analytics error."))
+            return f"No student named {params['name']}."
+        if len(matches)==1:
+            params["id"]= matches[0]["id"]
+            out,stat= analytics_student(params)
+            return out.get("message", out.get("error","Error."))
         else:
-            listing = "\n".join([f"{m['id']}: {m['name']}" for m in matches])
-            return f"Multiple students named {params['name']} found:\n{listing}\nWhich ID do you want to analyze?"
+            listing= "\n".join([f"{m['id']}: {m['name']}" for m in matches])
+            return f"Multiple found:\n{listing}\nWhich ID?"
     else:
-        return "Which student do you want to check performance for? Provide an ID or name."
+        return "Which student to analyze? Provide ID or name."
 
 ###############################################################################
-# 15. The Main State Machine: Decide Casual or Firestore
+# 15. The Main State Machine
 ###############################################################################
 def handle_state_machine(user_prompt):
-    # 1) Check if we are in a partial-add or partial-analytics scenario
-    state = conversation_context["state"]
-    pending_params = conversation_context["pending_params"]
+    state= conversation_context["state"]
+    pend= conversation_context["pending_params"]
 
-    if state == STATE_AWAITING_STUDENT_INFO:
-        desired_fields = ["name", "age", "class", "address", "phone", "guardian_name", "guardian_phone", "attendance", "grades"]
-        extracted = extract_fields(user_prompt, desired_fields)
-        for k, v in extracted.items():
-            pending_params[k] = v
+    if state== STATE_AWAITING_STUDENT_INFO:
+        desired= ["name","age","class","address","phone","guardian_name","guardian_phone","attendance","grades"]
+        found= extract_fields(user_prompt,desired)
+        for k,v in found.items():
+            pend[k]= v
+        if not pend.get("name"):
+            return "I still need name. Provide or 'cancel'."
 
-        if not pending_params.get("name"):
-            return "I still need the student's name. Provide it or say 'cancel' to stop."
+        out, st= add_student(pend)
+        conversation_context["state"]= STATE_IDLE
+        conversation_context["pending_params"]={}
+        conversation_context["last_intended_action"]= None
 
-        result, status = add_student(pending_params)
-        conversation_context["state"] = STATE_IDLE
-        conversation_context["pending_params"] = {}
-        conversation_context["last_intended_action"] = None
-
-        if "message" in result and status == 200:
-            # comedic follow-up
-            funny_prompt = create_funny_prompt_for_new_student(pending_params["name"])
-            followup_resp = model.generate_content(funny_prompt)
-            if followup_resp.candidates:
-                followup_text = followup_resp.candidates[0].content.parts[0].text.strip()
-                return result["message"] + "\n\n" + followup_text
+        if st==200 and "message" in out:
+            # comedic follow up
+            funny_prompt= create_funny_prompt_for_new_student(pend["name"])
+            r2= model.generate_content(funny_prompt)
+            if r2.candidates:
+                txt= r2.candidates[0].content.parts[0].text.strip()
+                return out["message"]+"\n\n"+txt
             else:
-                return result["message"]
+                return out["message"]
         else:
-            return result.get("error", "Error adding student.")
+            return out.get("error","Error adding student.")
 
-    elif state == STATE_AWAITING_ANALYTICS_TARGET:
-        desired_fields = ["id", "name"]
-        extracted = extract_fields(user_prompt, desired_fields)
-        for k, v in extracted.items():
-            pending_params[k] = v
-
-        if pending_params.get("id"):
-            result, status = analytics_student(pending_params)
-            conversation_context["state"] = STATE_IDLE
-            conversation_context["pending_params"] = {}
-            conversation_context["last_intended_action"] = None
-            return result.get("message", result.get("error", "Analytics error."))
-
-        elif pending_params.get("name"):
-            docs = db.collection("students").where("name", "==", pending_params["name"]).stream()
-            matches = [d.to_dict() for d in docs]
+    elif state== STATE_AWAITING_ANALYTICS_TARGET:
+        desired= ["id","name"]
+        found= extract_fields(user_prompt, desired)
+        for k,v in found.items():
+            pend[k]= v
+        if pend.get("id"):
+            out,st= analytics_student(pend)
+            conversation_context["state"]= STATE_IDLE
+            conversation_context["pending_params"]={}
+            conversation_context["last_intended_action"]=None
+            return out.get("message", out.get("error","Error."))
+        elif pend.get("name"):
+            # find doc by name
+            docs= db.collection("students").where("name","==",pend["name"]).stream()
+            matches= [doc.to_dict() for doc in docs]
             if not matches:
-                conversation_context["state"] = STATE_IDLE
-                conversation_context["pending_params"] = {}
-                conversation_context["last_intended_action"] = None
-                return f"No student found with name {pending_params['name']}."
-            if len(matches) == 1:
-                pending_params["id"] = matches[0]["id"]
-                result, status = analytics_student(pending_params)
-                conversation_context["state"] = STATE_IDLE
-                conversation_context["pending_params"] = {}
-                conversation_context["last_intended_action"] = None
-                return result.get("message", result.get("error", "Analytics error."))
+                conversation_context["state"]= STATE_IDLE
+                conversation_context["pending_params"]={}
+                conversation_context["last_intended_action"]=None
+                return f"No student named {pend['name']}."
+            if len(matches)==1:
+                pend["id"]= matches[0]["id"]
+                out,st= analytics_student(pend)
+                conversation_context["state"]= STATE_IDLE
+                conversation_context["pending_params"]={}
+                conversation_context["last_intended_action"]=None
+                return out.get("message", out.get("error","Error."))
             else:
-                listing = "\n".join([f"{m['id']}: {m['name']}" for m in matches])
-                return f"Multiple students named {pending_params['name']} found:\n{listing}\nWhich ID do you want to analyze?"
+                lst= "\n".join([f"{m['id']}: {m['name']}" for m in matches])
+                return f"Multiple found:\n{lst}\nWhich ID?"
         else:
-            return "Which student do you want to check? Provide an ID or name."
+            return "Which student? ID or name."
 
     else:
-        # 2) We are IDLE, so let's ask Gemini if it's casual or firestore
-        classification_result = classify_casual_or_firestore(user_prompt)
-        if classification_result.get("type") == "casual":
-            # Just respond casually
-            resp = model.generate_content(user_prompt)
-            if resp.candidates:
-                return resp.candidates[0].content.parts[0].text.strip()
+        # IDLE => classify
+        c= classify_casual_or_firestore(user_prompt)
+        if c.get("type")=="casual":
+            # casual
+            r= model.generate_content(user_prompt)
+            if r.candidates:
+                return r.candidates[0].content.parts[0].text.strip()
             else:
-                return "I'm at a loss for words..."
-
-        elif classification_result.get("type") == "firestore":
-            action = classification_result.get("action", "")
-            params = classification_result.get("parameters", {})
-
-            # we handle synonyms ourselves if needed, or rely on Gemini to get it right
-            # Check which action:
-            if action == "view_students":
+                return "I have nothing to say."
+        elif c.get("type")=="firestore":
+            a= c.get("action","")
+            p= c.get("parameters",{})
+            if a=="view_students":
                 return build_students_table_html("Student Records")
-
-            elif action == "cleanup_data":
+            elif a=="cleanup_data":
                 return cleanup_data()
-
-            elif action == "add_student":
-                if not params.get("name"):
-                    conversation_context["state"] = STATE_AWAITING_STUDENT_INFO
-                    conversation_context["pending_params"] = params
-                    conversation_context["last_intended_action"] = "add_student"
-                    return "Let's add a new student. What's their name?"
+            elif a=="add_student":
+                if not p.get("name"):
+                    conversation_context["state"]= STATE_AWAITING_STUDENT_INFO
+                    conversation_context["pending_params"]= p
+                    conversation_context["last_intended_action"]="add_student"
+                    return "Let's add new student. What's their name?"
                 else:
-                    result, status = add_student(params)
-                    if status == 200 and "message" in result:
-                        funny_prompt = create_funny_prompt_for_new_student(params["name"])
-                        followup_resp = model.generate_content(funny_prompt)
-                        if followup_resp.candidates:
-                            followup_text = followup_resp.candidates[0].content.parts[0].text.strip()
-                            return result["message"] + "\n\n" + followup_text
+                    out, st= add_student(p)
+                    if st==200 and "message" in out:
+                        # comedic
+                        funny= create_funny_prompt_for_new_student(p["name"])
+                        r2= model.generate_content(funny)
+                        if r2.candidates:
+                            txt= r2.candidates[0].content.parts[0].text.strip()
+                            return out["message"]+"\n\n"+txt
                         else:
-                            return result["message"]
+                            return out["message"]
                     else:
-                        return result.get("error", "Add student error.")
-
-            elif action == "update_student":
-                if not params.get("id"):
-                    return "To update a student, provide 'id'."
+                        return out.get("error","Error adding student.")
+            elif a=="update_student":
+                if not p.get("id"):
+                    return "To update, need 'id'."
+                out, st= update_student(p)
+                return out.get("message", out.get("error","Error."))
+            elif a=="delete_student":
+                if not p.get("id"):
+                    return "Need 'id' to delete."
+                out,st= delete_student(p)
+                return out.get("message", out.get("error","Error."))
+            elif a=="analytics_student":
+                if not (p.get("id") or p.get("name")):
+                    conversation_context["state"]= STATE_AWAITING_ANALYTICS_TARGET
+                    conversation_context["pending_params"]= p
+                    conversation_context["last_intended_action"]="analytics_student"
+                    return "Which student to check? Provide ID or name."
                 else:
-                    result, status = update_student(params)
-                    return result.get("message", result.get("error", "Update error."))
-
-            elif action == "delete_student":
-                if not params.get("id"):
-                    return "To delete a student, provide 'id'."
-                else:
-                    result, status = delete_student(params)
-                    return result.get("message", result.get("error", "Delete error."))
-
-            elif action == "analytics_student":
-                if not (params.get("id") or params.get("name")):
-                    conversation_context["state"] = STATE_AWAITING_ANALYTICS_TARGET
-                    conversation_context["pending_params"] = params
-                    conversation_context["last_intended_action"] = "analytics_student"
-                    return "Which student do you want to check performance for? Provide an ID or name."
-                else:
-                    return handle_analytics_call(params)
-
+                    return handle_analytics_call(p)
             else:
-                return f"Unknown Firestore action: {action}"
-
+                return f"Unknown Firestore action: {a}"
         else:
-            # If classification result is missing or incomplete
-            return "I'm not sure what you're asking. Is this casual conversation or a database action?"
+            return "I'm not sure. Is it casual or a Firestore request?"
 
 ###############################################################################
-# 16. Flask Routes
+# 16. Flask + HTML
 ###############################################################################
 @app.route("/")
 def index():
+    """
+    Return the chat UI (left) + sliding table panel (right).
+    Edits are saved via /bulk_update_students
+    """
     return """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Super Student Management Chat</title>
-
-  <link 
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" 
-    rel="stylesheet"
-  />
-
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Super Student Management</title>
+  <link rel="stylesheet" 
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"/>
   <style>
-    body {
-      background-color: #f8f9fa;
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-    }
-
-    .chat-container {
-      max-width: 700px;
-      margin: 2rem auto;
-      background-color: #fff;
-      border-radius: 0.5rem;
-      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-      display: flex;
-      flex-direction: column;
-      height: 80vh; /* 80% of the viewport height */
-      overflow: hidden;
-    }
-
-    .chat-header {
-      background-color: #343a40;
-      color: #fff;
-      padding: 1rem;
-      text-align: center;
-    }
-
-    .chat-body {
-      flex: 1;
-      padding: 1rem;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .chat-bubble {
-      padding: 0.75rem 1rem;
-      margin-bottom: 0.75rem;
-      border-radius: 15px;
-      max-width: 75%;
-      word-wrap: break-word;
-      white-space: pre-wrap;
-    }
-
-    .user-message {
-      background-color: #007bff;
-      color: #fff;
-      align-self: flex-end;
-      border-bottom-right-radius: 0;
-    }
-
-    .ai-message {
-      background-color: #e9ecef;
-      color: #000;
-      align-self: flex-start;
-      border-bottom-left-radius: 0;
-    }
-
-    .ai-message table {
-      width: 100%;
-      margin-top: 0.5rem;
-      border: 1px solid #ccc;
-      border-collapse: collapse;
-    }
-    .ai-message th, .ai-message td {
-      border: 1px solid #ccc;
-      padding: 0.5rem;
-      text-align: left;
-    }
-    .ai-message th {
-      background-color: #f1f1f1;
-    }
-
-    .chat-footer {
-      border-top: 1px solid #ddd;
-      padding: 1rem;
-      background-color: #f8f9fa;
-    }
-
-    /* The sliding table container */
-    #studentsSection {
-      position: fixed;
-      top: 0;
-      right: 0;
-      width: 50%;
-      height: 100%;
-      background-color: #fff;
-      border-left: 1px solid #ccc;
-      transform: translateX(100%);
+    body { margin:0; padding:0; background:#f8f9fa; }
+    .chat-wrap {
+      max-width:700px; margin:2rem auto; background:#fff; 
+      border-radius:0.5rem; box-shadow:0 4px 10px rgba(0,0,0,0.1);
+      display:flex; flex-direction:column; height:80vh; overflow:hidden;
       transition: transform 0.5s ease;
-      overflow-y: auto;
-      padding: 1rem;
     }
-    #studentsSection.show {
-      transform: translateX(0);
+    .chat-header { background:#343a40; color:#fff; padding:1rem; text-align:center; }
+    .chat-body { flex:1; padding:1rem; overflow-y:auto; display:flex; flex-direction:column; }
+    .chat-bubble {
+      margin-bottom:0.75rem; padding:0.75rem 1rem; border-radius:15px; 
+      max-width:75%; word-wrap:break-word; white-space:pre-wrap;
     }
+    .user-msg { background:#007bff; color:#fff; align-self:flex-end; border-bottom-right-radius:0; }
+    .ai-msg   { background:#e9ecef; color:#000; align-self:flex-start; border-bottom-left-radius:0; }
+    .chat-footer { border-top:1px solid #ddd; padding:1rem; background:#f8f9fa; }
+    #tablePanel {
+      position:fixed; top:0; right:0; width:50%; height:100%; 
+      background:#fff; border-left:1px solid #ccc; padding:1rem; 
+      overflow-y:auto; transform:translateX(100%); transition:transform 0.5s ease;
+    }
+    #tablePanel.show { transform:translateX(0%); }
+    #chatSection.slideLeft { transform:translateX(-20%); }
 
-    .slideFromRight {
-      animation: slideIn 0.5s forwards;
-    }
-    @keyframes slideIn {
-      from { transform: translateX(100%); }
-      to { transform: translateX(0); }
-    }
-
-    #serverStatus {
-      position: fixed;
-      bottom: 0; left: 0; right: 0;
-      background-color: #343a40;
-      color: #fff;
-      text-align: center;
-      padding: 0.5rem;
-      font-size: 0.9rem;
-    }
-
-    @media (max-width: 576px) {
-      .chat-container {
-        margin: 1rem;
-        height: 85vh;
-      }
-      .chat-bubble {
-        max-width: 100%;
-      }
-      #studentsSection {
-        width: 100%;
-      }
+    /* contenteditable formatting */
+    td[contenteditable="true"] {
+      outline:1px dashed #ccc; 
     }
   </style>
 </head>
-
 <body>
-  <div class="chat-container">
+  <div class="chat-wrap" id="chatSection">
     <div class="chat-header">
-      <h4 class="mb-0">Super Student Management Chat</h4>
+      <h4>Student Management Chat</h4>
     </div>
-    <div class="chat-body" id="messages"></div>
+    <div class="chat-body" id="chatBody"></div>
     <div class="chat-footer">
       <div class="input-group">
-        <input
-          type="text"
-          id="userInput"
-          class="form-control"
-          placeholder="Try 'Clean data', 'View students'..."
-          onkeydown="handleKeyDown(event)"
-        />
+        <input type="text" class="form-control" id="userInput" placeholder="Ask me something..."
+               onkeydown="if(event.key==='Enter') sendPrompt();">
         <button class="btn btn-primary" onclick="sendPrompt()">Send</button>
       </div>
     </div>
   </div>
 
-  <div id="studentsSection"></div>
-  <div id="serverStatus">Server is LIVE</div>
+  <div id="tablePanel"></div>
 
-  <script
-    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"
-  ></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
   <script>
-    const messagesContainer = document.getElementById('messages');
-    const userInputField = document.getElementById('userInput');
-    const studentsSection = document.getElementById('studentsSection');
+    const chatBody = document.getElementById('chatBody');
+    const userInput = document.getElementById('userInput');
+    const chatSection= document.getElementById('chatSection');
+    const tablePanel= document.getElementById('tablePanel');
 
-    function addMessage(text, sender) {
-      const bubble = document.createElement('div');
-      bubble.classList.add('chat-bubble', sender === 'user' ? 'user-message' : 'ai-message');
-
-      if (sender === 'ai' && (text.includes("<table") || text.includes("studentsSection"))) {
-        bubble.innerHTML = text;
-      } else {
-        bubble.textContent = text;
-      }
-      messagesContainer.appendChild(bubble);
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
-
-    function handleKeyDown(event) {
-      if (event.key === 'Enter') {
-        sendPrompt();
-      }
+    function addBubble(text, isUser=false) {
+      const bubble= document.createElement('div');
+      bubble.classList.add('chat-bubble', isUser ? 'user-msg' : 'ai-msg');
+      bubble.innerHTML = text;
+      chatBody.appendChild(bubble);
+      chatBody.scrollTop= chatBody.scrollHeight;
     }
 
     async function sendPrompt() {
-      const userInput = userInputField.value.trim();
-      if (!userInput) return;
-
-      // Show user's message
-      addMessage(userInput, 'user');
-
-      const requestOptions = {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: userInput })
-      };
+      const prompt= userInput.value.trim();
+      if(!prompt) return;
+      addBubble(prompt,true);
+      userInput.value='';
 
       try {
-        const response = await fetch('/process_prompt', requestOptions);
-        const data = await response.json();
-        const reply = data.message || data.error || 'No response from AI.';
-        processAIReply(reply);
-      } catch (error) {
-        console.error('Error:', error);
-        addMessage('Error: Unable to connect to server.', 'ai');
+        const resp= await fetch('/process_prompt',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ prompt })
+        });
+        const data= await resp.json();
+        const reply= data.message || data.error || 'No response.';
+        parseReply(reply);
+      } catch(err) {
+        addBubble("Error connecting to server: "+err,false);
       }
-
-      userInputField.value = '';
     }
 
-    function processAIReply(reply) {
-      // If the reply includes <table or #studentsSection, show in side panel
-      if (reply.includes("<table") || reply.includes("studentsSection")) {
-        studentsSection.innerHTML = reply;
-        studentsSection.classList.add('show');
+    function parseReply(reply) {
+      // If reply includes <table or 'slideFromRight', we show in tablePanel
+      if(reply.includes('<table') || reply.includes('slideFromRight')) {
+        tablePanel.innerHTML= reply;
+        tablePanel.classList.add('show');
+        chatSection.classList.add('slideLeft');
       } else {
-        addMessage(reply, 'ai');
+        addBubble(reply,false);
       }
     }
 
-    // Called by Save button in table
-    function saveTableEdits() {
-      studentsSection.classList.remove('show');
-      addMessage("Table changes saved. Panel closed.", 'ai');
+    // Called by "Save" button in the table
+    async function saveTableEdits() {
+      // gather each row
+      const rows= tablePanel.querySelectorAll('table tbody tr');
+      const updates= [];
+      rows.forEach( r => {
+        const cells= r.querySelectorAll('td');
+        if(!cells.length) return;
+        // id is in cell[0]
+        const sid= cells[0].innerText.trim();
+        if(!sid) return;
+        // name=1, age=2, class=3, address=4, phone=5, guardian=6, guardianPhone=7, attendance=8, grades=9
+        let name= cells[1].innerText.trim();
+        let age= cells[2].innerText.trim();
+        let sclass= cells[3].innerText.trim();
+        let address= cells[4].innerText.trim();
+        let phone= cells[5].innerText.trim();
+        let guardian= cells[6].innerText.trim();
+        let guardianPhone= cells[7].innerText.trim();
+        let attendance= cells[8].innerText.trim();
+        let grades= cells[9].innerText.trim();
+        // If grades is JSON
+        try {
+          grades= JSON.parse(grades);
+        } catch(e) {
+          // fallback
+        }
+        updates.push({
+          id:sid,
+          name,
+          age,
+          class:sclass,
+          address,
+          phone,
+          guardian_name: guardian,
+          guardian_phone: guardianPhone,
+          attendance,
+          grades
+        });
+      });
+
+      try {
+        const res= await fetch('/bulk_update_students',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ updates })
+        });
+        const data= await res.json();
+        if(data.success) {
+          addBubble("Changes saved to Firebase!",false);
+        } else {
+          addBubble("Error saving changes: "+(data.error||'unknown'), false);
+        }
+      } catch(err) {
+        addBubble("Error saving changes: "+err, false);
+      }
+      // close panel
+      tablePanel.classList.remove('show');
+      chatSection.classList.remove('slideLeft');
     }
   </script>
 </body>
 </html>
 """
 
+###############################################################################
+# 17. "bulk_update_students" Route
+###############################################################################
+@app.route("/bulk_update_students", methods=["POST"])
+def bulk_update_students_route():
+    data= request.json
+    updates= data.get("updates",[])
+    if not updates:
+        return jsonify({"error":"No updates provided."}),400
+
+    updated_ids= bulk_update_students(updates)
+    return jsonify({"success":True, "updated_ids":updated_ids}),200
+
+###############################################################################
+# 18. The main conversation route
+###############################################################################
 @app.route("/process_prompt", methods=["POST"])
 def process_prompt():
     global conversation_memory, conversation_context
-    data = request.json
-    user_prompt = data.get("prompt", "").strip()
+    data= request.json
+    user_prompt= data.get("prompt","").strip()
     if not user_prompt:
-        return jsonify({"error": "No prompt provided."}), 400
+        return jsonify({"error":"No prompt provided."}),400
 
-    conversation_memory.append({"role": "user", "content": user_prompt})
-    if len(conversation_memory) > MAX_MEMORY:
-        conversation_memory = conversation_memory[-MAX_MEMORY:]
+    conversation_memory.append({"role":"user","content": user_prompt})
+    if len(conversation_memory)> MAX_MEMORY:
+        conversation_memory= conversation_memory[-MAX_MEMORY:]
 
-    # If user says "reset memory" or "cancel"
-    if user_prompt.lower() in ["reset memory", "reset conversation", "cancel"]:
+    if user_prompt.lower() in ["reset memory","reset conversation","cancel"]:
         conversation_memory.clear()
-        conversation_context["state"] = STATE_IDLE
-        conversation_context["pending_params"] = {}
-        conversation_context["last_intended_action"] = None
+        conversation_context["state"]= STATE_IDLE
+        conversation_context["pending_params"]={}
+        conversation_context["last_intended_action"]=None
         save_memory_to_firestore()
-        return jsonify({"message": "Memory and context reset."}), 200
+        return jsonify({"message":"Memory and context reset."}),200
 
-    # The main state machine
-    reply = handle_state_machine(user_prompt)
-
-    conversation_memory.append({"role": "AI", "content": reply})
+    # handle
+    reply= handle_state_machine(user_prompt)
+    conversation_memory.append({"role":"AI","content":reply})
     save_memory_to_firestore()
-    return jsonify({"message": reply}), 200
+    return jsonify({"message":reply}),200
 
 ###############################################################################
-# 17. Global Error Handler
+# 19. Global Error Handler
 ###############################################################################
 @app.errorhandler(Exception)
-def handle_exception(e):
+def handle_exc(e):
     logging.error(f"Uncaught Exception: {e}")
-    return jsonify({"error": "An internal error occurred."}), 500
+    return jsonify({"error":"An internal error occurred."}),500
 
 ###############################################################################
-# 18. Before First Request => Load Memory + Summaries
+# 20. On Startup => Load Memory
 ###############################################################################
 @app.before_first_request
-def load_on_startup():
+def load_on_start():
     global conversation_memory, conversation_context, welcome_summary
-    memory, ctx = load_memory_from_firestore()
-    if memory:
-        conversation_memory.extend(memory)
+    mem, ctx= load_memory_from_firestore()
+    if mem:
+        conversation_memory.extend(mem)
     if ctx:
         conversation_context.update(ctx)
 
-    summary = generate_comedic_summary_of_past_activities()
-    welcome_summary = summary
-    conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
+    summary= generate_comedic_summary_of_past_activities()
+    welcome_summary= summary
+    conversation_memory.append({"role":"system","content":"PAST_ACTIVITIES_SUMMARY: "+ summary})
     save_memory_to_firestore()
-    logging.info(f"Startup summary: {summary}")
+    logging.info("Startup summary: "+summary)
 
 ###############################################################################
-# 19. Run Flask
+# 21. Run
 ###############################################################################
-if __name__ == "__main__":
-    # Load memory if any
-    memory, ctx = load_memory_from_firestore()
-    if memory:
-        conversation_memory = memory
-    if ctx:
-        conversation_context = ctx
+if __name__=="__main__":
+    mem,ctx= load_memory_from_firestore()
+    conversation_memory.extend(mem)
+    conversation_context.update(ctx)
 
-    summary = generate_comedic_summary_of_past_activities()
-    welcome_summary = summary
-    conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
+    summary= generate_comedic_summary_of_past_activities()
+    welcome_summary= summary
+    conversation_memory.append({"role":"system","content":"PAST_ACTIVITIES_SUMMARY: "+ summary})
     save_memory_to_firestore()
 
-    app.run(debug=True, port=8000)
+    app.run(debug=True,port=8000)
