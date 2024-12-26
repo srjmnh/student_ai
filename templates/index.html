@@ -70,14 +70,14 @@
             bubble.className = `chat-bubble ${sender === 'user' ? 'user-message' : 'ai-message'}`;
             bubble.textContent = text;
             messagesContainer.appendChild(bubble);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight; // Auto-scroll
+            messagesContainer.scrollTop = messagesContainer.scrollHeight; // Auto-scroll to the newest message
         }
 
         async function sendPrompt() {
             const userInput = document.getElementById('userInput').value;
             if (!userInput.trim()) return;
             
-            // Add user's message
+            // Add user's message to the chat
             addMessage(userInput, 'user');
 
             const requestOptions = {
@@ -89,14 +89,17 @@
             try {
                 const response = await fetch('/process_prompt', requestOptions);
                 const data = await response.json();
-                // Add AI's response
-                addMessage(data.response || 'No response from AI.', 'ai');
+                
+                // The Flask backend typically returns JSON like {"message": "..."} or {"error": "..."}.
+                // So we check for message first, then error, then fallback to 'No response from AI.'
+                addMessage(data.message || data.error || 'No response from AI.', 'ai');
             } catch (error) {
                 console.error('Error:', error);
                 addMessage('Error: Unable to connect to server.', 'ai');
             }
 
-            document.getElementById('userInput').value = ''; // Clear input
+            // Clear input after sending
+            document.getElementById('userInput').value = '';
         }
     </script>
 </body>
