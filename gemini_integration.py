@@ -142,7 +142,7 @@ def generate_comedic_summary_of_past_activities():
         return "An error occurred while digging up the past activities..."
 
 ###############################################################################
-# 7. Utility: remove code fences
+# 7. Utility: remove code fences + safe int
 ###############################################################################
 def remove_code_fences(text: str) -> str:
     fenced_pattern = r'^```(?:json)?\s*([\s\S]*?)\s*```$'
@@ -152,10 +152,6 @@ def remove_code_fences(text: str) -> str:
     return text
 
 def _safe_int(value):
-    """
-    Attempt to parse value as int. If it's already int, use it.
-    If it fails, return None.
-    """
     if value is None:
         return None
     if isinstance(value, int):
@@ -168,10 +164,6 @@ def _safe_int(value):
 # 8. Bulk Update for Table Editing
 ###############################################################################
 def bulk_update_students(student_list):
-    """
-    Receives a list of dicts, each with at least {id: "...", name: "...", etc.}
-    We'll update each student's doc in Firestore with these fields.
-    """
     updated_ids = []
     for st in student_list:
         sid = st.get("id")
@@ -183,7 +175,6 @@ def bulk_update_students(student_list):
             logging.warning(f"Document not found for ID {sid}")
             continue
 
-        # Build update fields
         fields_to_update = {}
         for k, v in st.items():
             if k == "id":
@@ -200,16 +191,23 @@ def bulk_update_students(student_list):
     return updated_ids
 
 ###############################################################################
-# 9. Cleanup Data (Deduplicate)
+# 9. Improved Cleanup Data (Deduplicate)
 ###############################################################################
 def cleanup_data():
+    """
+    Finds duplicates by 'name', keeps the doc with the highest field count, 
+    deletes the rest. Handles missing 'id' or non-string 'name' gracefully.
+    """
     docs = db.collection("students").stream()
     students = [doc.to_dict() for doc in docs]
 
     from collections import defaultdict
     name_groups = defaultdict(list)
+
     for st in students:
-        st_name = st.get("name", "").strip().lower()
+        # Convert name to string to avoid .strip() on None
+        raw_name = str(st.get("name") or "")
+        st_name = raw_name.strip().lower()
         if st_name:
             name_groups[st_name].append(st)
 
@@ -218,18 +216,40 @@ def cleanup_data():
         if len(group) > 1:
             best_student = None
             best_score = -1
+
             for st in group:
+                # Defensive check: ensure 'id' is present
+                doc_id = st.get("id")
+                if not doc_id:
+                    logging.warning(f"Skipping doc with missing 'id': {st}")
+                    continue
+                # Count how many non-empty fields
                 score = sum(1 for v in st.values() if v not in [None, "", {}])
                 if score > best_score:
                     best_score = score
                     best_student = st
+
+            if not best_student:
+                logging.warning(f"No valid 'best_student' found in group {group}")
+                continue
+
+            best_id = best_student.get("id")
+            if not best_id:
+                logging.warning(f"Best student is missing 'id': {best_student}")
+                continue
+
+            # Delete others
             for st in group:
-                if st["id"] != best_student["id"]:
-                    db.collection("students").document(st["id"]).delete()
-                    duplicates_deleted.append(st["id"])
+                doc_id = st.get("id")
+                if doc_id and doc_id != best_id:
+                    try:
+                        db.collection("students").document(doc_id).delete()
+                        duplicates_deleted.append(doc_id)
+                    except Exception as e:
+                        logging.error(f"Error deleting doc {doc_id}: {e}")
 
     if duplicates_deleted:
-        log_activity("CLEANUP_DATA", f"Deleted dups: {duplicates_deleted}")
+        log_activity("CLEANUP_DATA", f"Deleted duplicates: {duplicates_deleted}")
 
     return build_students_table_html("Data cleaned! Updated student records below:")
 
@@ -243,9 +263,6 @@ def build_students_table_html(heading="Student Records"):
     if not students:
         return "<p>No students found.</p>"
 
-    # Each row => data-id for Firestore doc
-    # We make each field (except ID) contenteditable
-    # If 'grades' is a dict, we convert to JSON string
     table_html = f"""
 <div id="studentsSection" class="slideFromRight">
   <h4>{heading}</h4>
@@ -253,7 +270,7 @@ def build_students_table_html(heading="Student Records"):
     <thead class="table-light">
       <tr>
         <th>ID</th>
-        <th contenteditable="false" style="min-width:80px;">Name</th>
+        <th contenteditable="false">Name</th>
         <th contenteditable="false">Age</th>
         <th contenteditable="false">Class</th>
         <th contenteditable="false">Address</th>
@@ -278,7 +295,7 @@ def build_students_table_html(heading="Student Records"):
         attendance = st.get("attendance","")
         grades = st.get("grades","")
 
-        # If grades is dict, convert to JSON string
+        # Convert dict grades to JSON
         if isinstance(grades, dict):
             grades = json.dumps(grades)
 
@@ -308,6 +325,34 @@ def build_students_table_html(heading="Student Records"):
 ###############################################################################
 # 11. Student Logic (Add, Update, Delete, Analytics) 
 ###############################################################################
+def generate_student_id(name, age):
+    random_number = random.randint(1000, 9999)
+    name_part = (name[:4].upper() if len(name)>=4 else name.upper())
+    age_str = str(age) if age else "00"
+    return f"{name_part}{age_str}{random_number}"
+
+def create_funny_prompt_for_new_student(name):
+    return (
+        f"Write a short witty statement acknowledging we have a new student '{name}'. "
+        "Ask if they'd like to add details like marks or attendance. Under 40 words, humorous."
+    )
+
+def create_comedic_confirmation(action, name=None, student_id=None):
+    if action == "add_student":
+        prompt = f"Generate a short, darkly funny success message confirming the addition of {name} (ID: {student_id})."
+    elif action == "update_student":
+        prompt = f"Create a short, darkly funny message confirming the update of student ID {student_id}."
+    elif action == "delete_student":
+        prompt = f"Create a short, darkly funny message confirming the deletion of student ID {student_id}."
+    else:
+        prompt = "A cryptic success message with an ominous twist."
+
+    resp = model.generate_content(prompt)
+    if resp.candidates:
+        return resp.candidates[0].content.parts[0].text.strip()[:100]
+    else:
+        return "Action completed, presumably in a dark fashion."
+
 def add_student(params):
     try:
         name = params.get("name")
@@ -358,18 +403,17 @@ def update_student(params):
             return {"error": f"No doc with id {sid} found."}, 404
 
         update_fields = {}
-        for k,v in params.items():
-            if k=="id": 
+        for k, v in params.items():
+            if k == "id":
                 continue
-            if k=="grades":
-                old_grades = snap.to_dict().get("grades",{})
-                # store in grades_history 
+            if k == "grades":
+                old_grades = snap.to_dict().get("grades", {})
                 new_entry = {
                     "old_grades": old_grades,
                     "new_grades": v,
                     "timestamp": firestore.SERVER_TIMESTAMP
                 }
-                hist = snap.to_dict().get("grades_history",[])
+                hist = snap.to_dict().get("grades_history", [])
                 hist.append(new_entry)
                 update_fields["grades_history"] = hist
             update_fields[k] = v
@@ -381,7 +425,7 @@ def update_student(params):
         return {"message": cmsg}, 200
     except Exception as e:
         logging.error(f"update_student error: {e}")
-        return {"error":str(e)},500
+        return {"error": str(e)}, 500
 
 def delete_student(params):
     try:
@@ -399,40 +443,40 @@ def delete_student(params):
         return {"message": cmsg}, 200
     except Exception as e:
         logging.error(f"delete_student error: {e}")
-        return {"error":str(e)},500
+        return {"error": str(e)}, 500
 
 def analytics_student(params):
     try:
         sid = params.get("id")
         if not sid:
-            return {"error": "Missing 'id' for analytics."},400
+            return {"error": "Missing 'id' for analytics."}, 400
+
         snap = db.collection("students").document(sid).get()
         if not snap.exists:
-            return {"error":f"No doc with id {sid}."},404
+            return {"error": f"No doc with id {sid}."}, 404
 
         data = snap.to_dict()
-        hist = data.get("grades_history",[])
+        hist = data.get("grades_history", [])
         if not hist:
-            return {"message":f"No historical grades for {data['name']}."},200
+            return {"message": f"No historical grades for {data['name']}."}, 200
 
         def avg_marks(grds):
             if not isinstance(grds, dict):
                 return 0
-            vals = [val for val in grds.values() if isinstance(val,(int,float))]
-            if not vals: return 0
-            return sum(vals)/len(vals)
+            vals = [val for val in grds.values() if isinstance(val, (int, float))]
+            return sum(vals) / len(vals) if vals else 0
 
         oldest = hist[0]["old_grades"]
-        newest= hist[-1]["new_grades"]
-        old_avg= avg_marks(oldest)
-        new_avg= avg_marks(newest)
-        trend= "improved" if new_avg>old_avg else "declined" if new_avg<old_avg else "stayed the same"
+        newest = hist[-1]["new_grades"]
+        old_avg = avg_marks(oldest)
+        new_avg = avg_marks(newest)
+        trend = "improved" if new_avg > old_avg else "declined" if new_avg < old_avg else "stayed the same"
 
-        msg= f"{data['name']}'s performance has {trend}. old={old_avg}, new={new_avg}"
-        return {"message":msg},200
+        msg = f"{data['name']}'s performance has {trend}. old={old_avg}, new={new_avg}"
+        return {"message": msg}, 200
     except Exception as e:
         logging.error(f"analytics_student error: {e}")
-        return {"error":str(e)},500
+        return {"error": str(e)}, 500
 
 ###############################################################################
 # 12. Classification for "Casual" vs "Firestore"
@@ -448,16 +492,16 @@ def classify_casual_or_firestore(user_prompt):
     )
     resp = model.generate_content(classification_prompt)
     if not resp.candidates:
-        return {"type":"casual"}
-    raw= resp.candidates[0].content.parts[0].text.strip()
-    raw= remove_code_fences(raw)
+        return {"type": "casual"}
+    raw = resp.candidates[0].content.parts[0].text.strip()
+    raw = remove_code_fences(raw)
     try:
-        data= json.loads(raw)
+        data = json.loads(raw)
         if "type" not in data:
-            data["type"]="casual"
+            data["type"] = "casual"
         return data
     except:
-        return {"type":"casual"}
+        return {"type": "casual"}
 
 ###############################################################################
 # 13. Additional Field Extraction
@@ -469,11 +513,11 @@ def extract_fields(user_input, desired_fields):
         f"User Input:'{user_input}'\n"
         "Return JSON with only those fields.\n"
     )
-    resp= model.generate_content(prompt)
+    resp = model.generate_content(prompt)
     if not resp.candidates:
         return {}
-    raw= ''.join(part.text for part in resp.candidates[0].content.parts).strip()
-    raw= remove_code_fences(raw)
+    raw = ''.join(part.text for part in resp.candidates[0].content.parts).strip()
+    raw = remove_code_fences(raw)
     try:
         return json.loads(raw)
     except:
@@ -484,20 +528,19 @@ def extract_fields(user_input, desired_fields):
 ###############################################################################
 def handle_analytics_call(params):
     if params.get("id"):
-        out,stat= analytics_student(params)
-        return out.get("message", out.get("error","Analytics error."))
+        out, stat = analytics_student(params)
+        return out.get("message", out.get("error", "Analytics error."))
     elif params.get("name"):
-        # find doc by name
-        docs= db.collection("students").where("name","==",params["name"]).stream()
-        matches= [d.to_dict() for d in docs]
+        docs = db.collection("students").where("name", "==", params["name"]).stream()
+        matches = [d.to_dict() for d in docs]
         if not matches:
             return f"No student named {params['name']}."
-        if len(matches)==1:
-            params["id"]= matches[0]["id"]
-            out,stat= analytics_student(params)
-            return out.get("message", out.get("error","Error."))
+        if len(matches) == 1:
+            params["id"] = matches[0]["id"]
+            out, stat = analytics_student(params)
+            return out.get("message", out.get("error", "Error."))
         else:
-            listing= "\n".join([f"{m['id']}: {m['name']}" for m in matches])
+            listing = "\n".join([f"{m['id']}: {m['name']}" for m in matches])
             return f"Multiple found:\n{listing}\nWhich ID?"
     else:
         return "Which student to analyze? Provide ID or name."
@@ -506,93 +549,94 @@ def handle_analytics_call(params):
 # 15. The Main State Machine
 ###############################################################################
 def handle_state_machine(user_prompt):
-    state= conversation_context["state"]
-    pend= conversation_context["pending_params"]
+    state = conversation_context["state"]
+    pend = conversation_context["pending_params"]
 
-    if state== STATE_AWAITING_STUDENT_INFO:
-        desired= ["name","age","class","address","phone","guardian_name","guardian_phone","attendance","grades"]
-        found= extract_fields(user_prompt,desired)
+    # If partial add
+    if state == STATE_AWAITING_STUDENT_INFO:
+        desired = ["name","age","class","address","phone","guardian_name","guardian_phone","attendance","grades"]
+        found = extract_fields(user_prompt, desired)
         for k,v in found.items():
-            pend[k]= v
+            pend[k] = v
         if not pend.get("name"):
             return "I still need name. Provide or 'cancel'."
 
-        out, st= add_student(pend)
-        conversation_context["state"]= STATE_IDLE
-        conversation_context["pending_params"]={}
-        conversation_context["last_intended_action"]= None
+        out, st = add_student(pend)
+        conversation_context["state"] = STATE_IDLE
+        conversation_context["pending_params"] = {}
+        conversation_context["last_intended_action"] = None
 
-        if st==200 and "message" in out:
-            # comedic follow up
-            funny_prompt= create_funny_prompt_for_new_student(pend["name"])
-            r2= model.generate_content(funny_prompt)
+        if st == 200 and "message" in out:
+            # comedic follow-up
+            funny_prompt = create_funny_prompt_for_new_student(pend["name"])
+            r2 = model.generate_content(funny_prompt)
             if r2.candidates:
-                txt= r2.candidates[0].content.parts[0].text.strip()
-                return out["message"]+"\n\n"+txt
+                txt = r2.candidates[0].content.parts[0].text.strip()
+                return out["message"] + "\n\n" + txt
             else:
                 return out["message"]
         else:
-            return out.get("error","Error adding student.")
+            return out.get("error", "Error adding student.")
 
-    elif state== STATE_AWAITING_ANALYTICS_TARGET:
-        desired= ["id","name"]
-        found= extract_fields(user_prompt, desired)
+    # If partial analytics
+    elif state == STATE_AWAITING_ANALYTICS_TARGET:
+        desired = ["id","name"]
+        found = extract_fields(user_prompt, desired)
         for k,v in found.items():
-            pend[k]= v
+            pend[k] = v
         if pend.get("id"):
-            out,st= analytics_student(pend)
-            conversation_context["state"]= STATE_IDLE
-            conversation_context["pending_params"]={}
-            conversation_context["last_intended_action"]=None
-            return out.get("message", out.get("error","Error."))
+            out, st = analytics_student(pend)
+            conversation_context["state"] = STATE_IDLE
+            conversation_context["pending_params"] = {}
+            conversation_context["last_intended_action"] = None
+            return out.get("message", out.get("error", "Error."))
         elif pend.get("name"):
-            # find doc by name
-            docs= db.collection("students").where("name","==",pend["name"]).stream()
-            matches= [doc.to_dict() for doc in docs]
+            docs = db.collection("students").where("name","==", pend["name"]).stream()
+            matches = [doc.to_dict() for doc in docs]
             if not matches:
-                conversation_context["state"]= STATE_IDLE
-                conversation_context["pending_params"]={}
-                conversation_context["last_intended_action"]=None
+                conversation_context["state"] = STATE_IDLE
+                conversation_context["pending_params"] = {}
+                conversation_context["last_intended_action"] = None
                 return f"No student named {pend['name']}."
-            if len(matches)==1:
-                pend["id"]= matches[0]["id"]
-                out,st= analytics_student(pend)
-                conversation_context["state"]= STATE_IDLE
-                conversation_context["pending_params"]={}
-                conversation_context["last_intended_action"]=None
-                return out.get("message", out.get("error","Error."))
+            if len(matches) == 1:
+                pend["id"] = matches[0]["id"]
+                out, st = analytics_student(pend)
+                conversation_context["state"] = STATE_IDLE
+                conversation_context["pending_params"] = {}
+                conversation_context["last_intended_action"] = None
+                return out.get("message", out.get("error", "Error."))
             else:
-                lst= "\n".join([f"{m['id']}: {m['name']}" for m in matches])
+                lst = "\n".join([f"{m['id']}: {m['name']}" for m in matches])
                 return f"Multiple found:\n{lst}\nWhich ID?"
         else:
             return "Which student? ID or name."
 
+    # Otherwise, we are IDLE => classify
     else:
-        # IDLE => classify
-        c= classify_casual_or_firestore(user_prompt)
-        if c.get("type")=="casual":
+        c = classify_casual_or_firestore(user_prompt)
+        if c.get("type") == "casual":
             # casual
-            r= model.generate_content(user_prompt)
+            r = model.generate_content(user_prompt)
             if r.candidates:
                 return r.candidates[0].content.parts[0].text.strip()
             else:
                 return "I have nothing to say."
-        elif c.get("type")=="firestore":
-            a= c.get("action","")
-            p= c.get("parameters",{})
-            if a=="view_students":
+        elif c.get("type") == "firestore":
+            a = c.get("action","")
+            p = c.get("parameters",{})
+            if a == "view_students":
                 return build_students_table_html("Student Records")
-            elif a=="cleanup_data":
+            elif a == "cleanup_data":
                 return cleanup_data()
-            elif a=="add_student":
+            elif a == "add_student":
                 if not p.get("name"):
-                    conversation_context["state"]= STATE_AWAITING_STUDENT_INFO
-                    conversation_context["pending_params"]= p
-                    conversation_context["last_intended_action"]="add_student"
+                    conversation_context["state"] = STATE_AWAITING_STUDENT_INFO
+                    conversation_context["pending_params"] = p
+                    conversation_context["last_intended_action"] = "add_student"
                     return "Let's add new student. What's their name?"
                 else:
-                    out, st= add_student(p)
-                    if st==200 and "message" in out:
+                    out, st = add_student(p)
+                    if st == 200 and "message" in out:
                         # comedic
                         funny= create_funny_prompt_for_new_student(p["name"])
                         r2= model.generate_content(funny)
@@ -603,17 +647,17 @@ def handle_state_machine(user_prompt):
                             return out["message"]
                     else:
                         return out.get("error","Error adding student.")
-            elif a=="update_student":
+            elif a == "update_student":
                 if not p.get("id"):
                     return "To update, need 'id'."
-                out, st= update_student(p)
+                out, st = update_student(p)
                 return out.get("message", out.get("error","Error."))
-            elif a=="delete_student":
+            elif a == "delete_student":
                 if not p.get("id"):
                     return "Need 'id' to delete."
                 out,st= delete_student(p)
                 return out.get("message", out.get("error","Error."))
-            elif a=="analytics_student":
+            elif a == "analytics_student":
                 if not (p.get("id") or p.get("name")):
                     conversation_context["state"]= STATE_AWAITING_ANALYTICS_TARGET
                     conversation_context["pending_params"]= p
@@ -809,13 +853,13 @@ def index():
 ###############################################################################
 @app.route("/bulk_update_students", methods=["POST"])
 def bulk_update_students_route():
-    data= request.json
-    updates= data.get("updates",[])
+    data = request.json
+    updates = data.get("updates", [])
     if not updates:
-        return jsonify({"error":"No updates provided."}),400
+        return jsonify({"error": "No updates provided."}), 400
 
-    updated_ids= bulk_update_students(updates)
-    return jsonify({"success":True, "updated_ids":updated_ids}),200
+    updated_ids = bulk_update_students(updates)
+    return jsonify({"success": True, "updated_ids": updated_ids}), 200
 
 ###############################################################################
 # 18. The main conversation route
@@ -823,28 +867,28 @@ def bulk_update_students_route():
 @app.route("/process_prompt", methods=["POST"])
 def process_prompt():
     global conversation_memory, conversation_context
-    data= request.json
-    user_prompt= data.get("prompt","").strip()
+    data = request.json
+    user_prompt = data.get("prompt", "").strip()
     if not user_prompt:
-        return jsonify({"error":"No prompt provided."}),400
+        return jsonify({"error": "No prompt provided."}), 400
 
-    conversation_memory.append({"role":"user","content": user_prompt})
-    if len(conversation_memory)> MAX_MEMORY:
-        conversation_memory= conversation_memory[-MAX_MEMORY:]
+    conversation_memory.append({"role": "user", "content": user_prompt})
+    if len(conversation_memory) > MAX_MEMORY:
+        conversation_memory[:] = conversation_memory[-MAX_MEMORY:]
 
-    if user_prompt.lower() in ["reset memory","reset conversation","cancel"]:
+    if user_prompt.lower() in ["reset memory", "reset conversation", "cancel"]:
         conversation_memory.clear()
-        conversation_context["state"]= STATE_IDLE
-        conversation_context["pending_params"]={}
-        conversation_context["last_intended_action"]=None
+        conversation_context["state"] = STATE_IDLE
+        conversation_context["pending_params"] = {}
+        conversation_context["last_intended_action"] = None
         save_memory_to_firestore()
-        return jsonify({"message":"Memory and context reset."}),200
+        return jsonify({"message": "Memory and context reset."}), 200
 
     # handle
-    reply= handle_state_machine(user_prompt)
-    conversation_memory.append({"role":"AI","content":reply})
+    reply = handle_state_machine(user_prompt)
+    conversation_memory.append({"role": "AI", "content": reply})
     save_memory_to_firestore()
-    return jsonify({"message":reply}),200
+    return jsonify({"message": reply}), 200
 
 ###############################################################################
 # 19. Global Error Handler
@@ -852,7 +896,7 @@ def process_prompt():
 @app.errorhandler(Exception)
 def handle_exc(e):
     logging.error(f"Uncaught Exception: {e}")
-    return jsonify({"error":"An internal error occurred."}),500
+    return jsonify({"error": "An internal error occurred."}), 500
 
 ###############################################################################
 # 20. On Startup => Load Memory
@@ -860,29 +904,29 @@ def handle_exc(e):
 @app.before_first_request
 def load_on_start():
     global conversation_memory, conversation_context, welcome_summary
-    mem, ctx= load_memory_from_firestore()
+    mem, ctx = load_memory_from_firestore()
     if mem:
         conversation_memory.extend(mem)
     if ctx:
         conversation_context.update(ctx)
 
-    summary= generate_comedic_summary_of_past_activities()
-    welcome_summary= summary
-    conversation_memory.append({"role":"system","content":"PAST_ACTIVITIES_SUMMARY: "+ summary})
+    summary = generate_comedic_summary_of_past_activities()
+    welcome_summary = summary
+    conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
     save_memory_to_firestore()
-    logging.info("Startup summary: "+summary)
+    logging.info("Startup summary: " + summary)
 
 ###############################################################################
 # 21. Run
 ###############################################################################
-if __name__=="__main__":
-    mem,ctx= load_memory_from_firestore()
+if __name__ == "__main__":
+    mem, ctx = load_memory_from_firestore()
     conversation_memory.extend(mem)
     conversation_context.update(ctx)
 
-    summary= generate_comedic_summary_of_past_activities()
-    welcome_summary= summary
-    conversation_memory.append({"role":"system","content":"PAST_ACTIVITIES_SUMMARY: "+ summary})
+    summary = generate_comedic_summary_of_past_activities()
+    welcome_summary = summary
+    conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
     save_memory_to_firestore()
 
-    app.run(debug=True,port=8000)
+    app.run(debug=True, port=8000)
