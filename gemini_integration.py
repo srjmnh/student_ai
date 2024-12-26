@@ -3,6 +3,7 @@ import os
 import json
 import random
 import logging
+import base64
 from flask import Flask, request, jsonify, render_template
 
 # Google Generative AI
@@ -32,36 +33,19 @@ logging.basicConfig(
 ###############################################################################
 # 3. Configure Gemini (Google Generative AI)
 ###############################################################################
-# For best practice, store your Gemini API key in an env variable
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     logging.error("GEMINI_API_KEY environment variable not set.")
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-# You can switch models here if needed (e.g., "models/chat-bison-001")
-model = genai.GenerativeModel("models/gemini-1.5-flash")
+model = genai.GenerativeModel("models/gemini-1.5-flash")  
+# If you don't have access to Gemini, try: "models/chat-bison-001"
 
 ###############################################################################
 # 4. Firebase Initialization
+#    (Using base64-encoded credentials from FIREBASE_CREDENTIALS)
 ###############################################################################
-# Option A: If FIREBASE_CREDENTIALS is actually a file path
-# firebase_credentials_path = os.getenv('FIREBASE_CREDENTIALS')
-# if not firebase_credentials_path:
-#     raise EnvironmentError("FIREBASE_CREDENTIALS env variable not set.")
-
-# if not os.path.exists(firebase_credentials_path):
-#     raise FileNotFoundError(f"Firebase credentials file '{firebase_credentials_path}' not found.")
-
-# cred = credentials.Certificate(firebase_credentials_path)
-# firebase_admin.initialize_app(cred, name='student_management_app')
-# db = firestore.client(app=firebase_admin.get_app('student_management_app'))
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Option B: If FIREBASE_CREDENTIALS is a *Base64-encoded* JSON (common in CI/CD)
-# Comment out the above approach if you're using base64 credentials:
-import base64
-
 if 'student_management_app' not in firebase_admin._apps:
     encoded_json = os.getenv("FIREBASE_CREDENTIALS")
     if not encoded_json:
@@ -75,12 +59,32 @@ if 'student_management_app' not in firebase_admin._apps:
         raise Exception(f"Error initializing Firebase: {e}")
 
 db = firestore.client(app=firebase_admin.get_app('student_management_app'))
-
 logging.info("✅ Firebase and Firestore initialized successfully.")
 
 ###############################################################################
-# 5. Conversation Memory & Activity Log
+# 5. Conversation + State Machine + Activity Log
 ###############################################################################
+# We'll store a minimal "state machine" in memory. For multi-user concurrency,
+# you'd store it in Firestore keyed by user/session ID. This is a single-user demo.
+###############################################################################
+
+# Possible conversation states
+STATE_IDLE = "IDLE"
+STATE_AWAITING_STUDENT_INFO = "AWAITING_STUDENT_INFO"
+STATE_AWAITING_STUDENT_SELECTION = "AWAITING_STUDENT_SELECTION"
+
+# We'll keep a global dictionary to track conversation context, including current state.
+conversation_context = {
+    "state": STATE_IDLE,
+    # We'll store partial user parameters, e.g. name, class, address, etc.
+    "pending_params": {},
+    # If searching for students by name yields multiple matches, store them here
+    "possible_students": [],
+    # We'll also keep the last intended action ("add_student", "delete_student", etc.)
+    "intended_action": None
+}
+
+# We'll still maintain conversation memory for summarization or debugging
 conversation_memory = []
 MAX_MEMORY = 20
 welcome_summary = ""
@@ -88,9 +92,10 @@ welcome_summary = ""
 def save_memory_to_firestore():
     try:
         db.collection('conversation_memory').document('session_1').set({
-            "memory": conversation_memory
+            "memory": conversation_memory,
+            "context": conversation_context  # Save context as well
         })
-        logging.info("✅ Memory saved to Firestore.")
+        logging.info("✅ Memory and context saved to Firestore.")
     except Exception as e:
         logging.error(f"❌ Failed to save memory: {e}")
 
@@ -98,29 +103,27 @@ def load_memory_from_firestore():
     try:
         doc = db.collection('conversation_memory').document('session_1').get()
         if doc.exists:
+            data = doc.to_dict()
             logging.info("✅ Loaded conversation memory from Firestore.")
-            return doc.to_dict().get("memory", [])
+            return data.get("memory", []), data.get("context", {})
         logging.info("✅ No existing conversation memory found.")
-        return []
+        return [], {}
     except Exception as e:
         logging.error(f"❌ Failed to load memory: {e}")
-        return []
+        return [], {}
 
 def log_activity(action_type, details):
     try:
         db.collection('activity_log').add({
             "action_type": action_type,
             "details": details,
-            "timestamp": firestore.SERVER_TIMESTAMP  # use SERVER_TIMESTAMP
+            "timestamp": firestore.SERVER_TIMESTAMP
         })
         logging.info(f"✅ Logged activity: {action_type}, details={details}")
     except Exception as e:
         logging.error(f"❌ Failed to log activity: {e}")
 
 def generate_comedic_summary_of_past_activities():
-    """
-    Reads logs from 'activity_log', and asks Gemini to produce a dark/funny summary.
-    """
     try:
         logs = db.collection('activity_log').order_by('timestamp').limit(100).stream()
         activity_lines = []
@@ -136,7 +139,7 @@ def generate_comedic_summary_of_past_activities():
         combined = "\n".join(activity_lines)
         prompt = (
             "As a darkly humorous AI, provide a concise (under 50 words) summary "
-            "of the following student management actions. Maintain a grim yet witty tone.\n\n"
+            "of these student management actions. Maintain a grim yet witty tone.\n\n"
             f"{combined}"
         )
         resp = model.generate_content(prompt)
@@ -145,13 +148,13 @@ def generate_comedic_summary_of_past_activities():
             logging.debug(f"Comedic summary generated: {summary}")
             return summary
         else:
-            return "No comedic summary could be conjured. The silence is deafening."
+            return "No comedic summary conjured. The silence is deafening."
     except Exception as e:
         logging.error(f"❌ Error generating comedic summary: {e}")
         return "An error occurred while digging up the past activities..."
 
 ###############################################################################
-# 6. Remove Triple Backticks (Code Fences)
+# 6. Remove Triple Backticks Helper
 ###############################################################################
 def remove_code_fences(text: str) -> str:
     fenced_pattern = r'^```(?:json)?\s*([\s\S]*?)\s*```$'
@@ -161,8 +164,16 @@ def remove_code_fences(text: str) -> str:
     return text
 
 ###############################################################################
-# 7. Student Logic (Add, Update, Delete, View)
+# 7. Firestore Helper Functions
 ###############################################################################
+def find_students_by_name(name):
+    """
+    Return a list of all students that match the provided name (case-insensitive).
+    You could make this fuzzy, but here's a simple approach.
+    """
+    docs = db.collection("students").where("name", "==", name).stream()
+    return [doc.to_dict() for doc in docs]
+
 def generate_student_id(name, age):
     random_number = random.randint(1000, 9999)
     name_part = (name[:4] if len(name) >= 4 else name).upper()
@@ -172,52 +183,28 @@ def generate_student_id(name, age):
 def create_comedic_confirmation(action, name, student_id):
     if action == "add_student":
         prompt = (
-            f"Generate a short (under 30 words), darkly funny success message confirming "
-            f"the addition of {name} (ID: {student_id}). Use clear language with a touch of ominous humor."
+            f"Generate a short, darkly funny success message confirming the addition "
+            f"of {name} (ID: {student_id})."
         )
     elif action == "update_student":
         prompt = (
-            f"Create a short, clear, darkly funny message confirming the update "
-            f"of student ID {student_id}. Make it witty and slightly ominous."
+            f"Create a short, darkly funny message confirming the update "
+            f"of student ID {student_id}."
         )
     elif action == "delete_student":
         prompt = (
-            f"Create a short, clear, darkly funny message confirming the deletion "
-            f"of student ID {student_id}. Make it witty and slightly ominous."
+            f"Create a short, darkly funny message confirming the deletion "
+            f"of student ID {student_id}."
         )
     else:
-        prompt = "Action completed successfully with a touch of dark humor."
+        prompt = "Action completed with a hint of darkness."
 
     resp = model.generate_content(prompt)
     if resp.candidates:
-        # Truncate to 100 chars if it's too long
-        return truncate_response(resp.candidates[0].content.parts[0].text.strip(), max_length=100)
+        text_resp = resp.candidates[0].content.parts[0].text.strip()
+        return text_resp[:100]  # Truncate to 100 chars if too long
     else:
         return "Action completed with a hint of darkness."
-
-def extract_fields(user_input, desired_fields):
-    fields_str = ", ".join(desired_fields)
-    prompt = (
-        f"You are an assistant tasked with extracting specific fields from user input. "
-        f"Extract the values for the following fields: {fields_str}.\n"
-        f"Return only a JSON object with those fields and their values.\n"
-        f"If a field is not present, omit it.\n\n"
-        f"**User Input:** '{user_input}'\n\n"
-        f"**JSON Output Only:**"
-    )
-    resp = model.generate_content(prompt)
-    if resp.candidates:
-        content = ''.join(part.text for part in resp.candidates[0].content.parts).strip()
-        content = remove_code_fences(content)
-        logging.debug(f"Gemini extraction response: {content}")
-        try:
-            extracted = json.loads(content)
-            logging.debug(f"Extracted fields: {extracted}")
-            return extracted
-        except json.JSONDecodeError:
-            logging.error(f"Gemini returned invalid JSON for extraction: {content}")
-            return {}
-    return {}
 
 def add_student(params):
     try:
@@ -232,11 +219,9 @@ def add_student(params):
         grades = params.get("grades")
 
         if not name:
-            logging.error("add_student: Missing mandatory field: name")
-            return {"error": "Missing mandatory field: name"}, 400
+            return {"error": "Missing 'name' to add student."}, 400
 
         student_id = generate_student_id(name, age)
-
         student_data = {
             "id": student_id,
             "name": name,
@@ -253,7 +238,7 @@ def add_student(params):
         db.collection("students").document(student_id).set(student_data)
         logging.info(f"✅ Added student to Firestore: {student_data}")
 
-        log_activity("ADD_STUDENT", f"Added {name} (ID {student_id}) with data: {student_data}")
+        log_activity("ADD_STUDENT", f"Added {name} (ID {student_id}).")
 
         confirmation_message = create_comedic_confirmation("add_student", name, student_id)
         return {"message": f"{confirmation_message} (ID: {student_id})"}, 200
@@ -266,13 +251,10 @@ def update_student(params):
     try:
         student_id = params.get("id")
         if not student_id:
-            logging.error("update_student: Missing student 'id' for update.")
             return {"error": "Missing student 'id' for update."}, 400
 
         update_fields = {k: v for k, v in params.items() if k != "id"}
-
         if not update_fields:
-            logging.error("update_student: No fields provided to update.")
             return {"error": "No fields provided to update."}, 400
 
         db.collection("students").document(student_id).update(update_fields)
@@ -291,11 +273,10 @@ def delete_student(params):
     try:
         student_id = params.get("id")
         if not student_id:
-            logging.error("delete_student: Missing student 'id' for deletion.")
             return {"error": "Missing student 'id' for deletion."}, 400
 
         db.collection("students").document(student_id).delete()
-        logging.info(f"✅ Deleted student ID {student_id} from Firestore.")
+        logging.info(f"✅ Deleted student ID {student_id}")
 
         log_activity("DELETE_STUDENT", f"Deleted student ID {student_id}")
 
@@ -320,181 +301,322 @@ def view_students():
         return {"error": str(e)}, 500
 
 ###############################################################################
-# 8. Flask Routes
+# 8. Classification Prompt
+#    We'll ask Gemini to figure out if user wants to:
+#    - add_student
+#    - update_student
+#    - delete_student
+#    - view_students
+#    or it's partial, or is a casual conversation
+###############################################################################
+def classify_user_input(user_prompt):
+    classification_prompt = (
+        "You are an advanced assistant that classifies user input into Firestore actions or casual talk.\n\n"
+        "**Actions**:\n"
+        " - add_student\n"
+        " - update_student\n"
+        " - delete_student\n"
+        " - view_students\n\n"
+        "The user might say partial phrases like 'Add new pupil' or 'Show me all students' or 'Remove John.'\n"
+        "Return valid JSON only, no extra text.\n\n"
+        "If user wants to add, update, delete, or view students, return:\n"
+        "{\n"
+        "  \"type\": \"firestore\", \n"
+        "  \"action\": \"add_student\" (or other), \n"
+        "  \"parameters\": { ... }\n"
+        "}\n\n"
+        "If the user is casually talking or something else, return:\n"
+        "{ \"type\": \"casual\" }\n\n"
+        "Try to extract partial parameters from the user input (e.g. name, class, phone) if present.\n"
+        "For partial or uncertain data, just fill what you can in 'parameters'.\n\n"
+        f"User Input: '{user_prompt}'\n\n"
+        "Output (JSON only):"
+    )
+
+    response = model.generate_content(classification_prompt)
+    if not response.candidates:
+        logging.error("No response from Gemini classification.")
+        return {"type": "casual"}
+
+    content = ''.join(part.text for part in response.candidates[0].content.parts).strip()
+    content = remove_code_fences(content)
+    logging.debug(f"Gemini classification response: {content}")
+
+    try:
+        action_data = json.loads(content)
+        if "type" not in action_data:
+            raise ValueError("Missing 'type'.")
+        if action_data["type"] == "firestore":
+            if "action" not in action_data or "parameters" not in action_data:
+                raise ValueError("Firestore JSON must have 'action' and 'parameters'.")
+
+            # Normalize known short actions (like "add" => "add_student") if needed
+            short_map = {
+                "add": "add_student",
+                "update": "update_student",
+                "delete": "delete_student",
+                "view": "view_students"
+            }
+            raw_action = action_data["action"].lower().strip()
+            if raw_action in short_map:
+                action_data["action"] = short_map[raw_action]
+
+        return action_data
+
+    except (json.JSONDecodeError, ValueError) as e:
+        logging.error(f"Invalid classification JSON: {content}. Error: {e}")
+        return {"type": "casual"}
+
+###############################################################################
+# 9. State Machine Logic
+#    We'll define a function that checks the current context/state and decides
+#    what to do next.
+###############################################################################
+def handle_state_machine(user_prompt):
+    """
+    High-level logic that uses conversation_context to decide what to do.
+    1) If state=AWAITING_STUDENT_INFO, we might parse missing fields from the user prompt.
+    2) If state=AWAITING_STUDENT_SELECTION, we might see which student the user wants from a list.
+    3) Otherwise, we classify normally and handle actions.
+    """
+    state = conversation_context["state"]
+    logging.debug(f"Current state: {state}")
+
+    # 1) If we're waiting for student info to complete an 'add_student'
+    if state == STATE_AWAITING_STUDENT_INFO:
+        # Try to parse new data from user input
+        # We'll define the "desired_fields" for an add operation, for example.
+        desired_fields = ["name", "age", "class", "address", "phone", "guardian_name", "guardian_phone"]
+        extracted = extract_fields(user_prompt, desired_fields)
+
+        # Merge into pending_params
+        for k, v in extracted.items():
+            conversation_context["pending_params"][k] = v
+
+        # Check if we have the minimal required: 'name'
+        if not conversation_context["pending_params"].get("name"):
+            return "I still need the student's name. Please provide it."
+
+        # We can proceed to add now or ask for more. Let's add if we have a name.
+        # If you want to ask for missing optional fields (phone, address, etc.), you could prompt again.
+        result, status = add_student(conversation_context["pending_params"])
+        conversation_context["pending_params"] = {}  # Clear
+        conversation_context["state"] = STATE_IDLE
+        conversation_context["intended_action"] = None
+        return result.get("message", result.get("error", "Done."))
+
+    # 2) If we're waiting for student selection (e.g. multiple John found)
+    if state == STATE_AWAITING_STUDENT_SELECTION:
+        # The user might specify which student ID to delete or update
+        # We'll parse the user prompt to see if there's an ID
+        # For simplicity, let's see if user typed something like 'delete ABCD1234'
+        # But let's do a quick search for an ID in the user_prompt
+        words = user_prompt.split()
+        chosen_id = None
+        for w in words:
+            if len(w) >= 5 and w.isalnum():
+                chosen_id = w
+                break
+
+        if not chosen_id:
+            return "Please specify the exact student ID from the list above."
+
+        # We'll see what the intended_action was. e.g. "delete_student"
+        intended = conversation_context["intended_action"]
+        if intended == "delete_student":
+            output, status = delete_student({"id": chosen_id})
+            # Clear possible_students, reset state
+            conversation_context["possible_students"] = []
+            conversation_context["state"] = STATE_IDLE
+            conversation_context["intended_action"] = None
+            return output.get("message", output.get("error", "Delete done."))
+
+        elif intended == "update_student":
+            # This is more complex, we'd ask which fields to update, etc.
+            # For brevity, let's do a direct partial approach:
+            conversation_context["pending_params"]["id"] = chosen_id
+            output, status = update_student(conversation_context["pending_params"])
+            conversation_context["possible_students"] = []
+            conversation_context["pending_params"] = {}
+            conversation_context["state"] = STATE_IDLE
+            conversation_context["intended_action"] = None
+            return output.get("message", output.get("error", "Update done."))
+
+        else:
+            # If the user was asked to pick a student for something else,
+            # handle it similarly.
+            conversation_context["state"] = STATE_IDLE
+            return f"Not sure what to do with ID {chosen_id}. State reset."
+
+    # 3) If state=IDLE or otherwise, we classify
+    action_data = classify_user_input(user_prompt)
+    if action_data.get("type") == "casual":
+        # Just respond casually
+        casual_resp = model.generate_content(user_prompt)
+        if casual_resp.candidates:
+            return casual_resp.candidates[0].content.parts[0].text.strip()
+        else:
+            return "I'm at a loss for words..."
+
+    elif action_data.get("type") == "firestore":
+        action = action_data["action"]
+        params = action_data["parameters"]
+
+        if action == "view_students":
+            # Show the list
+            output, status = view_students()
+            if "students" in output:
+                # Return them in text form
+                return "Here are the students:\n" + json.dumps(output["students"], indent=2)
+            else:
+                return output.get("error", "Something went wrong with view_students")
+
+        elif action == "add_student":
+            # If minimal param 'name' is missing, ask for it
+            if not params.get("name"):
+                # Switch to waiting state
+                conversation_context["state"] = STATE_AWAITING_STUDENT_INFO
+                conversation_context["pending_params"] = params
+                conversation_context["intended_action"] = "add_student"
+                return "Alright, let's add a new student. What's the student's name?"
+
+            # If we have a name, let's add right away
+            result, status = add_student(params)
+            return result.get("message", result.get("error", "Add student error."))
+
+        elif action == "delete_student":
+            # If user gave an ID, just delete
+            if params.get("id"):
+                result, status = delete_student(params)
+                return result.get("message", result.get("error", "Delete error."))
+            # If user gave a name, find matches
+            elif params.get("name"):
+                matches = find_students_by_name(params["name"])
+                if not matches:
+                    return f"No student found with name {params['name']}."
+                if len(matches) == 1:
+                    # We can delete directly
+                    student_id = matches[0]["id"]
+                    result, status = delete_student({"id": student_id})
+                    return result.get("message", result.get("error", "Delete error."))
+                else:
+                    # Multiple matches => ask user which ID
+                    conversation_context["possible_students"] = matches
+                    conversation_context["state"] = STATE_AWAITING_STUDENT_SELECTION
+                    conversation_context["intended_action"] = "delete_student"
+                    # Display them
+                    listing = "\n".join([f"{m['id']}: {m['name']}" for m in matches])
+                    return f"Multiple students named {params['name']} found:\n{listing}\nWhich ID do you want to delete?"
+            else:
+                return "Who do you want to delete? Provide a name or ID."
+
+        elif action == "update_student":
+            # This could be more sophisticated if the user says "update John" 
+            # and we find multiple or none. For brevity, let's handle ID or name:
+            if params.get("id"):
+                # If ID, we can update right away
+                result, status = update_student(params)
+                return result.get("message", result.get("error", "Update error."))
+            elif params.get("name"):
+                matches = find_students_by_name(params["name"])
+                if not matches:
+                    return f"No student found with name {params['name']}."
+                if len(matches) == 1:
+                    # Only one match, let's update. Add 'id' to params
+                    params["id"] = matches[0]["id"]
+                    result, status = update_student(params)
+                    return result.get("message", result.get("error", "Update error."))
+                else:
+                    conversation_context["possible_students"] = matches
+                    conversation_context["pending_params"] = params
+                    conversation_context["state"] = STATE_AWAITING_STUDENT_SELECTION
+                    conversation_context["intended_action"] = "update_student"
+                    listing = "\n".join([f"{m['id']}: {m['name']}" for m in matches])
+                    return f"Multiple matches found for '{params['name']}':\n{listing}\nWhich ID do you want to update?"
+            else:
+                return "Please specify which student to update (by 'id' or 'name')."
+
+        else:
+            return f"Unknown firestore action: {action}"
+
+    else:
+        # Type is something else or incomplete
+        return "I'm not sure I understood. Could you clarify what you want?"
+
+###############################################################################
+# 10. Helper for extracting fields from user input (for partial)
+###############################################################################
+def extract_fields(user_input, desired_fields):
+    fields_str = ", ".join(desired_fields)
+    prompt = (
+        f"You are an assistant that extracts specific fields from user input. "
+        f"Fields: {fields_str}. Return JSON with only those fields if present.\n\n"
+        f"User Input: '{user_input}'\n\n"
+        "Output (JSON only):"
+    )
+    resp = model.generate_content(prompt)
+    if resp.candidates:
+        content = ''.join(part.text for part in resp.candidates[0].content.parts).strip()
+        content = remove_code_fences(content)
+        logging.debug(f"Gemini extraction response: {content}")
+        try:
+            extracted = json.loads(content)
+            logging.debug(f"Extracted fields: {extracted}")
+            return extracted
+        except json.JSONDecodeError:
+            logging.error(f"Gemini returned invalid JSON for extraction: {content}")
+            return {}
+    return {}
+
+###############################################################################
+# 11. Flask Routes
 ###############################################################################
 @app.route("/")
 def index():
     global welcome_summary
     if not welcome_summary:
         welcome_summary = "Welcome! Here's a summary of our past activities..."
+    # You can render an HTML file that calls "/process_prompt" via AJAX or fetch
     return render_template("index.html", summary=welcome_summary)
-
-def classify_user_input(user_prompt):
-    classification_prompt = (
-        "You are an intelligent assistant trained to classify user inputs into two distinct categories: "
-        "casual conversations and Firestore database actions. "
-        "Respond with valid JSON only, no extra text.\n\n"
-        "**Categories:**\n"
-        "1. **Casual Conversation**\n"
-        "   - {\"type\": \"casual\"}\n\n"
-        "2. **Firestore Action**\n"
-        "   - Must be one of: add_student, update_student, delete_student, view_students\n"
-        "   - Example: {\"type\": \"firestore\", \"action\": \"add_student\", \"parameters\": {...}}\n\n"
-        "Guidelines:\n"
-        "- If user is adding/updating/deleting/viewing students, set type=firestore.\n"
-        "- The action must be exactly one of: add_student, update_student, delete_student, view_students.\n\n"
-        f"**User Input:** '{user_prompt}'\n\n"
-        "**Output:** (valid JSON only)"
-    )
-
-    response = model.generate_content(classification_prompt)
-    if response.candidates:
-        content = ''.join(part.text for part in response.candidates[0].content.parts).strip()
-        content = remove_code_fences(content)
-        logging.debug(f"Gemini classification response: {content}")
-
-        try:
-            action_data = json.loads(content)
-
-            # Ensure there's a "type" field
-            if "type" not in action_data:
-                raise ValueError("Missing 'type' in classification JSON.")
-
-            if action_data["type"] == "firestore":
-                if "action" not in action_data or "parameters" not in action_data:
-                    raise ValueError("Missing 'action' or 'parameters' in Firestore JSON.")
-
-                # ─────────────────────────────────────────────────────
-                # 1) Normalize short or incorrect action names
-                #    If the model returns "add", "update", "delete", "view", map them:
-                short_actions_map = {
-                    "add": "add_student",
-                    "update": "update_student",
-                    "delete": "delete_student",
-                    "view": "view_students",
-                }
-                raw_action = action_data["action"].lower().strip()
-                if raw_action in short_actions_map:
-                    action_data["action"] = short_actions_map[raw_action]
-
-                # or if the model is slightly off (like "Add_Student" with a capital "A"),
-                # you could do some more checks or forcibly set it to one of the known strings.
-                recognized_actions = {"add_student", "update_student", "delete_student", "view_students"}
-                if action_data["action"] not in recognized_actions:
-                    raise ValueError(f"Unknown Firestore action: {action_data['action']}")
-
-            return action_data
-
-        except (json.JSONDecodeError, ValueError) as e:
-            logging.error(f"Invalid classification JSON or missing fields: {content}. Error: {e}")
-            # Return a clarification prompt:
-            return {"type": "clarification", "message": "Could you clarify your request? Try add_student, update_student, delete_student, or view_students."}
-    else:
-        logging.error("No response from Gemini for classification.")
-        return {"type": "casual"}
-
-def truncate_response(response_text, max_length=100):
-    return (response_text[:max_length] + '...') if len(response_text) > max_length else response_text
 
 @app.route("/process_prompt", methods=["POST"])
 def process_prompt():
-    global conversation_memory
+    global conversation_memory, conversation_context
 
-    try:
-        data = request.json
-        user_prompt = data.get("prompt", "").strip()
-        logging.debug(f"Received prompt: {user_prompt}")
+    data = request.json
+    user_prompt = data.get("prompt", "").strip()
+    logging.debug(f"Received prompt: {user_prompt}")
 
-        if not user_prompt:
-            return jsonify({"error": "No prompt provided."}), 400
+    if not user_prompt:
+        return jsonify({"message": "No prompt provided."}), 400
 
-        # Append user input to memory
-        conversation_memory.append({"role": "user", "content": user_prompt})
-        if len(conversation_memory) > MAX_MEMORY:
-            conversation_memory = conversation_memory[-MAX_MEMORY:]
+    # Append to conversation memory
+    conversation_memory.append({"role": "user", "content": user_prompt})
+    if len(conversation_memory) > MAX_MEMORY:
+        conversation_memory = conversation_memory[-MAX_MEMORY:]
 
-        # If user says "reset memory"
-        if user_prompt.lower() == "reset memory":
-            conversation_memory.clear()
-            save_memory_to_firestore()
-            return jsonify({"message": "Memory has been reset... and so has your conscience."}), 200
+    # If user says 'reset memory'
+    if user_prompt.lower() in ["reset memory", "reset conversation"]:
+        conversation_memory.clear()
+        # Reset context
+        conversation_context["state"] = STATE_IDLE
+        conversation_context["pending_params"] = {}
+        conversation_context["possible_students"] = []
+        conversation_context["intended_action"] = None
+        save_memory_to_firestore()
+        return jsonify({"message": "Memory and context reset."}), 200
 
-        # Classify the prompt
-        action_data = classify_user_input(user_prompt)
-        logging.debug(f"Classification result: {action_data}")
+    # Let the state machine handle it
+    system_reply = handle_state_machine(user_prompt)
 
-        # CASE 1: CASUAL
-        if action_data.get("type") == "casual":
-            casual_resp = model.generate_content(user_prompt)
-            if casual_resp.candidates:
-                reply = casual_resp.candidates[0].content.parts[0].text.strip()
-                reply = truncate_response(reply, max_length=100)
-            else:
-                reply = "I'm at a loss for words in this dark abyss."
+    # Append AI's reply
+    conversation_memory.append({"role": "AI", "content": system_reply})
+    save_memory_to_firestore()
 
-            conversation_memory.append({"role": "AI", "content": reply})
-            save_memory_to_firestore()
-            return jsonify({"message": reply}), 200
-
-        # CASE 2: FIRESTORE
-        elif action_data.get("type") == "firestore":
-            action = action_data.get("action")
-            params = action_data.get("parameters", {})
-            logging.debug(f"Firestore action: {action}, params: {params}")
-
-            if action == "add_student":
-                # Possibly extract more fields from the user prompt
-                desired_fields = ["name", "age", "class", "address", "phone", 
-                                  "guardian_name", "guardian_phone", "attendance", "grades"]
-                extracted_fields = extract_fields(user_prompt, desired_fields)
-                student_params = {**params, **extracted_fields}
-                result, status = add_student(student_params)
-                conversation_memory.append({"role": "AI", "content": result.get("message", "")})
-                save_memory_to_firestore()
-                return jsonify(result), status
-
-            elif action == "update_student":
-                output, status = update_student(params)
-                conversation_memory.append({"role": "AI", "content": output.get("message", "")})
-                save_memory_to_firestore()
-                return jsonify(output), status
-
-            elif action == "delete_student":
-                output, status = delete_student(params)
-                conversation_memory.append({"role": "AI", "content": output.get("message", "")})
-                save_memory_to_firestore()
-                return jsonify(output), status
-
-            elif action == "view_students":
-                output, status = view_students()
-                # Optionally store the list of students in memory if you want.
-                conversation_memory.append({"role": "AI", "content": "Here's the list of students:"})
-                conversation_memory.append({"role": "AI", "content": json.dumps(output.get("students", []), indent=2)})
-                save_memory_to_firestore()
-                return jsonify(output), status
-
-            else:
-                logging.warning(f"Unknown Firestore action: {action}")
-                return jsonify({"error": f"Unknown Firestore action: {action}"}), 400
-
-        # CASE 3: CLARIFICATION
-        elif action_data.get("type") == "clarification":
-            clarification_message = action_data.get("message", "Could you clarify your request?")
-            conversation_memory.append({"role": "AI", "content": clarification_message})
-            save_memory_to_firestore()
-            return jsonify({"message": clarification_message}), 200
-
-        # CASE 4: Anything else
-        else:
-            logging.warning(f"Could not classify input. {action_data}")
-            return jsonify({"error": "Could not classify input."}), 400
-
-    except Exception as e:
-        logging.error(f"❌ An error occurred in /process_prompt: {e}")
-        return jsonify({"error": "An internal error occurred."}), 500
+    return jsonify({"message": system_reply}), 200
 
 ###############################################################################
-# 9. Global Error Handler for JSON
+# 12. Global Error Handler
 ###############################################################################
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -502,27 +624,34 @@ def handle_exception(e):
     return jsonify({"error": "An internal error occurred."}), 500
 
 ###############################################################################
-# 10. On Startup => Generate Comedic Summary
+# 13. On Startup => Generate Comedic Summary
 ###############################################################################
 @app.before_first_request
 def load_summary_on_startup():
-    global conversation_memory
-    global welcome_summary
+    global conversation_memory, conversation_context, welcome_summary
+    # Attempt to load memory and context
+    memory, ctx = load_memory_from_firestore()
+    if memory:
+        conversation_memory.extend(memory)
+    if ctx:
+        conversation_context.update(ctx)
+
     summary = generate_comedic_summary_of_past_activities()
     welcome_summary = summary
-    # Optionally store it in conversation memory
     conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
     save_memory_to_firestore()
     logging.info(f"🔮 Past Activities Summary: {summary}")
 
 ###############################################################################
-# 11. Run Flask on Port 8000
+# 14. Run Flask on Port 8000
 ###############################################################################
 if __name__ == "__main__":
-    # Load existing memory if any
-    conversation_memory = load_memory_from_firestore()
+    # Load existing memory/context if any
+    memory, ctx = load_memory_from_firestore()
+    conversation_memory = memory if memory else conversation_memory
+    if ctx:
+        conversation_context.update(ctx)
 
-    # Generate summary on startup
     summary = generate_comedic_summary_of_past_activities()
     welcome_summary = summary
     conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
