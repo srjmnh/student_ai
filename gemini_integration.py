@@ -38,10 +38,11 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("models/gemini-1.5-flash")  # or "models/chat-bison-001" if needed
+# Switch to "models/chat-bison-001" if you don't have gemini-1.5-flash:
+model = genai.GenerativeModel("models/gemini-1.5-flash")
 
 ###############################################################################
-# 4. Firebase Initialization (Base64 credentials)
+# 4. Firebase Initialization
 ###############################################################################
 if 'student_management_app' not in firebase_admin._apps:
     encoded_json = os.getenv("FIREBASE_CREDENTIALS")
@@ -59,13 +60,13 @@ db = firestore.client(app=firebase_admin.get_app('student_management_app'))
 logging.info("✅ Firebase and Firestore initialized successfully.")
 
 ###############################################################################
-# 5. Conversation + States
+# 5. Conversation + Memory
 ###############################################################################
 conversation_memory = []
 MAX_MEMORY = 20
 welcome_summary = ""
 
-# States
+# States for partial logic
 STATE_IDLE = "IDLE"
 STATE_AWAITING_STUDENT_INFO = "AWAITING_STUDENT_INFO"
 STATE_AWAITING_ANALYTICS_TARGET = "AWAITING_ANALYTICS_TARGET"
@@ -109,7 +110,7 @@ def log_activity(action_type, details):
         logging.error(f"❌ Failed to log activity: {e}")
 
 ###############################################################################
-# 6. Summaries
+# 6. Generate Comedic Summary
 ###############################################################################
 def generate_comedic_summary_of_past_activities():
     try:
@@ -135,7 +136,7 @@ def generate_comedic_summary_of_past_activities():
         return "An error occurred rummaging through the logs."
 
 ###############################################################################
-# 7. Utils
+# 7. Utility
 ###############################################################################
 def remove_code_fences(text: str) -> str:
     fenced_pattern = r'^```(?:json)?\s*([\s\S]*?)\s*```$'
@@ -154,7 +155,7 @@ def _safe_int(value):
     return None
 
 ###############################################################################
-# 8. Firestore Logic
+# 8. Firestore Helpers
 ###############################################################################
 def delete_student_doc(doc_id):
     ref = db.collection("students").document(doc_id)
@@ -165,14 +166,14 @@ def delete_student_doc(doc_id):
     return True, "deleted"
 
 ###############################################################################
-# 9. Student Functions
+# 9. Student CRUD + Confirmations
 ###############################################################################
 def gen_student_id(name, age):
     import random
-    r= random.randint(1000,9999)
-    part= (name[:4].upper() if len(name)>=4 else name.upper())
-    a= str(age) if age else "00"
-    return f"{part}{a}{r}"
+    n = random.randint(1000,9999)
+    p = (name[:4].upper() if len(name)>=4 else name.upper())
+    a = str(age) if age else "00"
+    return f"{p}{a}{n}"
 
 def comedic_confirmation(action, name=None, doc_id=None):
     if action=="add_student":
@@ -536,11 +537,58 @@ def handle_analytics(p):
     return out.get("message", out.get("error","Error."))
 
 ###############################################################################
-# 15. The main HTML route
+# 14. Additional Routes
+###############################################################################
+@app.route("/delete_by_id", methods=["POST"])
+def delete_by_id():
+    data= request.json
+    sid= data.get("id")
+    if not sid:
+        return jsonify({"error":"No ID"}),400
+    ok,msg= delete_student_doc(sid)
+    if not ok:
+        return jsonify({"error":msg}),404
+    log_activity("DELETE_STUDENT", f"Deleted {sid} via trash icon.")
+    conf= comedic_confirmation("delete_student", doc_id=sid)
+    return jsonify({"success":True,"message":conf}),200
+
+@app.route("/bulk_update_students", methods=["POST"])
+def bulk_update_students_route():
+    data= request.json
+    ups= data.get("updates",[])
+    if not ups:
+        return jsonify({"error":"No updates provided."}),400
+    updated= []
+    for st in ups:
+        sid= st.get("id")
+        if not sid:
+            continue
+        doc_ref= db.collection("students").document(sid)
+        snap= doc_ref.get()
+        if not snap.exists:
+            continue
+        # update fields
+        fields_to_update={}
+        for k,v in st.items():
+            if k=="id":
+                continue
+            if k=="age":
+                fields_to_update["age"]= _safe_int(v)
+            else:
+                fields_to_update[k]= v
+        doc_ref.update(fields_to_update)
+        updated.append(sid)
+    if updated:
+        log_activity("BULK_UPDATE", f"Updated => {updated}")
+    return jsonify({"success":True,"updated_ids":updated}),200
+
+###############################################################################
+# 15. Main HTML Route
 ###############################################################################
 @app.route("/")
 def index():
     global welcome_summary
+    # We'll embed comedic summary
     safe_sum= welcome_summary.replace('"','\\"').replace('\n','\\n')
 
     return f"""
@@ -550,10 +598,9 @@ def index():
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Super Student Management</title>
-  <link rel="stylesheet" 
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"/>
+
   <style>
-    /* Similar CSS as before for dark mode, intro screen, etc. */
     body {{
       margin:0; padding:0; background:#f8f9fa;
       transition: background 0.3s, color 0.3s;
@@ -565,8 +612,7 @@ def index():
       position:fixed; top:0; left:0; right:0; bottom:0;
       background:#111; color:#fff; display:flex; flex-direction:column;
       justify-content:center; align-items:center;
-      text-align:center; padding:2rem;
-      z-index:9999;
+      text-align:center; padding:2rem; z-index:9999;
       transition: opacity 0.5s ease;
     }}
     #introScreen.hidden {{
@@ -575,9 +621,9 @@ def index():
     .chat-wrap {{
       max-width:700px; margin:2rem auto; background:#fff; 
       border-radius:0.5rem; box-shadow:0 4px 10px rgba(0,0,0,0.1);
-      display:none; 
+      display:none; /* hide until we say so */
       flex-direction:column; height:80vh; overflow:hidden;
-      transition: transform 0.5s ease, background 0.3s, color 0.3s;
+      transition: transform 0.5s, background 0.3s, color 0.3s;
     }}
     body.dark-mode .chat-wrap {{
       background:#333; color:#fff;
@@ -626,10 +672,10 @@ def index():
     #tablePanel {{
       position:fixed; top:0; right:0; width:50%; height:100%;
       background:#fff; border-left:1px solid #ccc; padding:1rem;
-      overflow-y:auto; transform:translateX(100%); transition:transform 0.5s ease;
+      overflow-y:auto; transform:translateX(100%); transition:transform 0.5s;
     }}
     #tablePanel.show {{
-      transform:translateX(0%);
+      transform:translateX(0);
     }}
     #chatSection.slideLeft {{
       transform:translateX(-20%);
@@ -641,6 +687,7 @@ def index():
     td[contenteditable="true"]:hover {{
       background:#fafbcd;
     }}
+
     @media (max-width:576px) {{
       .chat-wrap {{
         margin:1rem; height:85vh;
@@ -686,18 +733,21 @@ def index():
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
-    function hideIntro() {{
+    function hideIntro() {
+      console.log("hideIntro called!"); // for debugging
       const intro = document.getElementById('introScreen');
       intro.classList.add('hidden');
-      setTimeout(() => {{
+      setTimeout(() => {
         intro.style.display='none';
-        document.getElementById('chatSection').style.display='';
-      }}, 500);
-    }}
+        // now show chat
+        const chatSection = document.getElementById('chatSection');
+        chatSection.style.display='';
+      }, 500);
+    }
 
-    function toggleDarkMode() {{
+    function toggleDarkMode() {
       document.body.classList.toggle('dark-mode');
-    }}
+    }
 
     const musicTracks = [
       "https://www.bensound.com/bensound-music/bensound-anewbeginning.mp3",
@@ -705,110 +755,112 @@ def index():
       "https://www.bensound.com/bensound-music/bensound-funnysong.mp3"
     ];
 
-    window.addEventListener('DOMContentLoaded', () => {{
+    window.addEventListener('DOMContentLoaded', () => {
+      // hide chat by default
       const chatSection = document.getElementById('chatSection');
       chatSection.style.display='none';
 
       const bgMusic = document.getElementById('bgMusic');
       const randomUrl = musicTracks[Math.floor(Math.random() * musicTracks.length)];
       bgMusic.src = randomUrl;
-    }});
+    });
 
     const chatBody = document.getElementById('chatBody');
     const userInput = document.getElementById('userInput');
     const tablePanel= document.getElementById('tablePanel');
 
-    function addBubble(text, isUser=false) {{
+    function addBubble(text, isUser=false) {
       const bubble= document.createElement('div');
       bubble.classList.add('chat-bubble', isUser ? 'user-msg' : 'ai-msg');
       bubble.innerHTML = text;
       chatBody.appendChild(bubble);
       chatBody.scrollTop= chatBody.scrollHeight;
-    }}
+    }
 
-    async function sendPrompt() {{
+    async function sendPrompt() {
       const prompt= userInput.value.trim();
       if(!prompt) return;
       addBubble(prompt,true);
       userInput.value='';
 
-      try {{
-        const resp= await fetch('/process_prompt',{{
+      try {
+        const resp= await fetch('/process_prompt',{
           method:'POST',
-          headers:{{'Content-Type':'application/json'}},
-          body: JSON.stringify({{prompt}})
-        }});
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ prompt })
+        });
         const data= await resp.json();
         parseReply(data.message || data.error || 'No response.');
-      }} catch(err) {{
+      } catch(err) {
         addBubble("Error connecting: "+err,false);
-      }}
-    }}
+      }
+    }
 
-    function parseReply(reply) {{
-      if(reply.includes('<table') || reply.includes('slideFromRight')) {{
+    function parseReply(reply) {
+      if(reply.includes('<table') || reply.includes('slideFromRight')) {
         tablePanel.innerHTML= reply;
         addDeleteIcons();
         tablePanel.classList.add('show');
         document.getElementById('chatSection').classList.add('slideLeft');
-      }} else {{
+      } else {
         addBubble(reply,false);
-      }}
-    }}
+      }
+    }
 
-    function addDeleteIcons() {{
+    function addDeleteIcons() {
       const table = tablePanel.querySelector('table');
       if(!table) return;
       const headRow = table.querySelector('thead tr');
-      if(headRow && !headRow.querySelector('.action-col')) {{
+      if(headRow && !headRow.querySelector('.action-col')) {
         const th = document.createElement('th');
         th.textContent='Action';
         th.classList.add('action-col');
         headRow.appendChild(th);
-      }}
+      }
       const tbody = table.querySelector('tbody');
       if(!tbody) return;
-      tbody.querySelectorAll('tr').forEach(tr => {{
+      tbody.querySelectorAll('tr').forEach(tr => {
         let cells = tr.querySelectorAll('td');
-        if(cells.length>0) {{
+        if(cells.length>0) {
           const sid= cells[0].innerText.trim();
           const td = document.createElement('td');
           td.classList.add('action-col');
-          td.innerHTML= `<button style="border:none; background:transparent; color:red;" onclick="deleteRow('${{sid}}')">🗑️</button>`;
+          td.innerHTML= `<button style="border:none; background:transparent; color:red;" onclick="deleteRow('${sid}')">🗑️</button>`;
           tr.appendChild(td);
-        }}
-      }});
-    }}
+        }
+      });
+    }
 
-    async function deleteRow(sid) {{
-      try {{
-        const resp= await fetch('/delete_by_id',{{
+    async function deleteRow(sid) {
+      try {
+        const resp= await fetch('/delete_by_id',{
           method:'POST',
-          headers:{{'Content-Type':'application/json'}},
-          body: JSON.stringify({{id:sid}})
-        }});
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({id:sid})
+        });
         const data= await resp.json();
-        if(data.success) {{
+        if(data.success) {
           addBubble(data.message,false);
-          const vresp= await fetch('/process_prompt',{{
+          // re-view students
+          const vresp= await fetch('/process_prompt',{
             method:'POST',
-            headers:{{'Content-Type':'application/json'}},
-            body: JSON.stringify({{prompt:'view students'}})
-          }});
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({prompt:'view students'})
+          });
           const vdata= await vresp.json();
           parseReply(vdata.message);
-        }} else {{
+        } else {
           addBubble("Delete error: "+(data.error||data.message),false);
-        }}
-      }} catch(err) {{
+        }
+      } catch(err) {
         addBubble("Delete error: "+err,false);
-      }}
-    }}
+      }
+    }
 
-    async function saveTableEdits() {{
+    async function saveTableEdits() {
       const rows= tablePanel.querySelectorAll('table tbody tr');
       const updates= [];
-      rows.forEach(r => {{
+      rows.forEach(r => {
         const cells= r.querySelectorAll('td');
         if(!cells.length) return;
         const sid= cells[0].innerText.trim();
@@ -822,8 +874,8 @@ def index():
         let guardianPhone= cells[7].innerText.trim();
         let attendance= cells[8].innerText.trim();
         let grades= cells[9].innerText.trim();
-        try {{ grades= JSON.parse(grades); }} catch(e){{}}
-        updates.push({{
+        try { grades= JSON.parse(grades); } catch(e){}
+        updates.push({
           id:sid,
           name,
           age,
@@ -834,57 +886,63 @@ def index():
           guardian_phone: guardianPhone,
           attendance,
           grades
-        }});
-      }});
+        });
+      });
 
-      try {{
-        const resp= await fetch('/bulk_update_students',{{
+      try {
+        const resp= await fetch('/bulk_update_students',{
           method:'POST',
-          headers:{{'Content-Type':'application/json'}},
-          body: JSON.stringify({{updates}})
-        }});
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({updates})
+        });
         const data= await resp.json();
-        if(data.success) {{
+        if(data.success) {
           addBubble("Changes saved to Firebase!",false);
-        }} else {{
+        } else {
           addBubble("Error saving changes: "+(data.error||data.message),false);
-        }}
-      }} catch(err) {{
+        }
+      } catch(err) {
         addBubble("Error saving changes: "+err,false);
-      }}
+      }
       tablePanel.classList.remove('show');
       document.getElementById('chatSection').classList.remove('slideLeft');
-    }}
+    }
   </script>
 </body>
 </html>
 """
 
 ###############################################################################
-# 21. Startup + Run
+# 16. On Startup => Load memory, summary
 ###############################################################################
 @app.before_first_request
 def load_on_start():
     global conversation_memory, conversation_context, welcome_summary
-    mem, ctx= load_memory_from_firestore()
+    mem, ctx = load_memory_from_firestore()
     if mem:
         conversation_memory.extend(mem)
     if ctx:
         conversation_context.update(ctx)
+
     summary= generate_comedic_summary_of_past_activities()
     welcome_summary= summary
     conversation_memory.append({"role":"system","content":"PAST_ACTIVITIES_SUMMARY: "+ summary})
     save_memory_to_firestore()
     logging.info("Startup summary: "+ summary)
 
+###############################################################################
+# 17. Actually run Flask
+###############################################################################
 if __name__=="__main__":
     mem,ctx= load_memory_from_firestore()
     if mem:
         conversation_memory.extend(mem)
     if ctx:
         conversation_context.update(ctx)
+
     summary= generate_comedic_summary_of_past_activities()
     welcome_summary= summary
     conversation_memory.append({"role":"system","content":"PAST_ACTIVITIES_SUMMARY: "+ summary})
     save_memory_to_firestore()
+
     app.run(debug=True, port=8000)
