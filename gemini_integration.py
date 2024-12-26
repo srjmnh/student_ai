@@ -785,7 +785,7 @@ def index():
 
     const chatBody = document.getElementById('chatBody');
     const userInput = document.getElementById('userInput');
-    const tablePanel= document.getElementById('tablePanel');
+    const tablePanel = document.getElementById('tablePanel');
 
     function addBubble(text, isUser=false) {
       const bubble = document.createElement('div');
@@ -932,7 +932,7 @@ def index():
 """
 
 ###############################################################################
-# 16. On Startup => Load Memory, Summaries
+# 16. On Startup => Load memory, summary
 ###############################################################################
 @app.before_first_request
 def load_on_start():
@@ -950,7 +950,7 @@ def load_on_start():
     logging.info("Startup summary: " + summary)
 
 ###############################################################################
-# 17. Run
+# 17. Actually run Flask
 ###############################################################################
 if __name__ == "__main__":
     mem, ctx = load_memory_from_firestore()
