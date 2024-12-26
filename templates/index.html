@@ -19,20 +19,19 @@
 </head>
 <body>
   <!-- Home Screen -->
-  <div id="homeScreen" class="animate__animated animate__fadeIn">
-    <h1>{{ safe_summary }}</h1>
-    <button onclick="hideHomeScreen()">Continue</button>
+  <div id="homeScreen" class="home-screen animate__animated animate__fadeIn">
+    <div class="home-content">
+      <h1>{{ safe_summary }}</h1>
+      <button class="btn btn-primary btn-continue" onclick="hideHomeScreen()">Continue</button>
+    </div>
   </div>
-
-  <!-- Background music with random track from an array of URLs -->
-  <audio id="bgMusic" autoplay loop></audio>
 
   <!-- Chat Interface -->
   <div class="chat-wrap" id="chatSection">
     <div class="chat-header">
       <h4>Student Management Chat</h4>
       <!-- Dark Mode Toggle Button -->
-      <button class="dark-toggle" onclick="toggleDarkMode()">🌙 Dark Mode</button>
+      <button class="dark-toggle" onclick="toggleDarkMode()" aria-label="Toggle Dark Mode">🌙 Dark Mode</button>
     </div>
     <div class="chat-body" id="chatBody"></div>
     <div class="chat-footer">
@@ -47,6 +46,20 @@
   <!-- Table Panel -->
   <div id="tablePanel" class="animate__animated">
     <!-- Content loaded dynamically -->
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1100">
+    <div id="liveToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="toast-header">
+        <strong class="me-auto">Notification</strong>
+        <small>Just now</small>
+        <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+      </div>
+      <div class="toast-body" id="toastBody">
+        Hello, world! This is a toast message.
+      </div>
+    </div>
   </div>
 
   <!-- Bootstrap JS Bundle -->

@@ -21,26 +21,15 @@ const tablePanel = document.getElementById('tablePanel');
 const homeScreen = document.getElementById('homeScreen');
 
 // Toast Notification (Optional Enhancement)
-const toastContainer = document.createElement('div');
-toastContainer.className = 'position-fixed bottom-0 end-0 p-3';
-toastContainer.style.zIndex = '1100';
-document.body.appendChild(toastContainer);
+const toastElement = document.getElementById('liveToast');
+const toastBody = document.getElementById('toastBody');
+const bsToast = new bootstrap.Toast(toastElement);
 
-function showToast(message, type = 'info') {
-  const toastId = `toast-${Date.now()}`;
-  const toastHTML = `
-    <div id="${toastId}" class="toast align-items-center text-bg-${type} border-0" role="alert" aria-live="assertive" aria-atomic="true">
-      <div class="d-flex">
-        <div class="toast-body">
-          ${message}
-        </div>
-        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
-      </div>
-    </div>
-  `;
-  toastContainer.insertAdjacentHTML('beforeend', toastHTML);
-  const toastElement = document.getElementById(toastId);
-  const bsToast = new bootstrap.Toast(toastElement);
+// Function to show toast
+function showToast(message, type = 'primary') {
+  toastBody.innerText = message;
+  toastElement.classList.remove('text-bg-primary', 'text-bg-success', 'text-bg-danger', 'text-bg-warning', 'text-bg-info', 'text-bg-secondary');
+  toastElement.classList.add(`text-bg-${type}`);
   bsToast.show();
 }
 
@@ -60,6 +49,8 @@ async function sendPrompt() {
   addBubble(prompt, true);
   userInput.value = '';
 
+  addTypingIndicator();
+
   try {
     const resp = await fetch('/process_prompt', {
       method: 'POST',
@@ -68,8 +59,10 @@ async function sendPrompt() {
     });
     const data = await resp.json();
     const reply = data.message || data.error || 'No response.';
+    removeTypingIndicator();
     parseReply(reply);
   } catch (err) {
+    removeTypingIndicator();
     addBubble("Error connecting to server: " + err, false);
     showToast("Error connecting to server.", 'danger');
   }
@@ -179,8 +172,33 @@ window.addEventListener('load', () => {
 // Home Screen Functionality
 function hideHomeScreen() {
   homeScreen.classList.add('animate__animated', 'animate__fadeOut');
-  // After transition, hide the home screen completely
+  // After transition, hide the home screen completely and show chat
   setTimeout(() => {
     homeScreen.style.display = 'none';
-  }, 500);
+    chatSection.classList.add('show');
+  }, 500); // Match the animation duration in CSS (0.5s)
 }
+
+// Typing Indicator Functions
+function addTypingIndicator() {
+  const typingBubble = document.createElement('div');
+  typingBubble.classList.add('chat-bubble', 'ai-msg', 'animate__animated', 'animate__fadeIn');
+  typingBubble.id = 'typingIndicator';
+  typingBubble.innerHTML = '<em>Typing...</em>';
+  chatBody.appendChild(typingBubble);
+  chatBody.scrollTop = chatBody.scrollHeight;
+}
+
+function removeTypingIndicator() {
+  const typingBubble = document.getElementById('typingIndicator');
+  if (typingBubble) {
+    typingBubble.remove();
+  }
+}
+
+// Ensure proper behavior on window resize for mobile responsiveness
+window.addEventListener('resize', () => {
+  if (window.innerWidth <= 576) {
+    // Adjust elements if necessary
+  }
+});

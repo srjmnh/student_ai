@@ -19,6 +19,55 @@ body.dark-mode {
   color: #f0f2f5;
 }
 
+.home-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: #ffffff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  transition: opacity 0.5s ease, visibility 0.5s ease;
+}
+
+body.dark-mode .home-screen {
+  background: #2c2c2c;
+  color: #f0f2f5;
+}
+
+.home-content {
+  text-align: center;
+  padding: 2rem;
+  border-radius: 15px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+  background: rgba(255, 255, 255, 0.8);
+  transition: background 0.3s, color 0.3s;
+}
+
+body.dark-mode .home-content {
+  background: rgba(44, 44, 44, 0.8);
+}
+
+.home-content h1 {
+  font-size: 2rem;
+  margin-bottom: 1.5rem;
+}
+
+.btn-continue {
+  border-radius: 25px;
+  padding: 0.75rem 2rem;
+  font-size: 1rem;
+  transition: background 0.3s, transform 0.3s;
+}
+
+.btn-continue:hover {
+  background: #0056b3;
+  transform: scale(1.05);
+}
+
 .chat-wrap {
   width: 100%;
   height: 100%;
@@ -29,11 +78,19 @@ body.dark-mode {
   box-shadow: 0 8px 32px rgba(0,0,0,0.1);
   transition: background 0.3s, color 0.3s;
   overflow: hidden;
+  visibility: hidden;
+  opacity: 0;
 }
 
 body.dark-mode .chat-wrap {
   background: #2c2c2c;
   color: #f0f2f5;
+}
+
+.chat-wrap.show {
+  visibility: visible;
+  opacity: 1;
+  animation: fadeIn 0.5s ease forwards;
 }
 
 .chat-header {
@@ -44,6 +101,8 @@ body.dark-mode .chat-wrap {
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
+  border-bottom-left-radius: 15px;
+  border-bottom-right-radius: 15px;
 }
 
 .dark-toggle {
@@ -115,6 +174,8 @@ body.dark-mode .ai-msg {
   background: #ffffff;
   transition: background 0.3s ease;
   flex-shrink: 0;
+  border-top-left-radius: 15px;
+  border-top-right-radius: 15px;
 }
 
 body.dark-mode .chat-footer {
@@ -221,5 +282,12 @@ body.dark-mode #tablePanel {
   }
   #chatSection.slideLeft {
     transform: translateX(-10%);
+  }
+  .home-content h1 {
+    font-size: 1.5rem;
+  }
+  .btn-continue {
+    padding: 0.5rem 1.5rem;
+    font-size: 0.9rem;
   }
 }
