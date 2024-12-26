@@ -38,8 +38,7 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-
-# If you do NOT have access to Gemini, switch to "models/chat-bison-001":
+# If you do NOT have access to Gemini, switch to "models/chat-bison-001"
 model = genai.GenerativeModel("models/gemini-1.5-flash")
 
 ###############################################################################
@@ -439,51 +438,51 @@ def analytics_student(params):
         return {"error": str(e)}, 500
 
 ###############################################################################
-# 13. Classification
+# 13. Simple Classification for "Casual" vs. "Firestore"
 ###############################################################################
-def classify_user_input(user_prompt):
+def classify_casual_or_firestore(user_prompt):
+    """
+    Use Gemini to decide if the user prompt is a casual conversation
+    or a Firestore action.
+    We'll return JSON like:
+    {
+      "type": "casual"
+    }
+    or
+    {
+      "type": "firestore",
+      "action": "add_student",
+      "parameters": {...}
+    }
+    If it can't parse, we treat it as casual.
+    """
     classification_prompt = (
-        "You are an advanced assistant that classifies user input into actions:\n"
-        " - add_student\n"
-        " - update_student\n"
-        " - delete_student\n"
-        " - view_students (including synonyms like 'hire students', 'list students', etc.)\n"
-        " - cleanup_data (synonyms: 'clean data', 'cleanup', 'deduplicate')\n"
-        " - analytics_student (like 'check performance')\n"
-        "If not an action, return {\"type\": \"casual\"}.\n\n"
-        "Output JSON only, e.g.:\n"
-        "{ \"type\": \"firestore\", \"action\": \"add_student\", \"parameters\": {...} } or {\"type\": \"casual\"}.\n\n"
-        f"User Input: '{user_prompt}'\n\n"
-        "Output JSON only (no code fences)."
+        "You are an advanced assistant that ONLY decides if a user request is "
+        "casual conversation or Firestore action.\n\n"
+        "If casual, return: {\"type\":\"casual\"}\n"
+        "If firestore, return a JSON object with \"type\":\"firestore\", an \"action\" key, and a \"parameters\" object.\n"
+        "Allowed actions: add_student, update_student, delete_student, view_students, cleanup_data, analytics_student.\n"
+        "Synonyms:\n"
+        "- 'view students', 'show all students', 'list students' => view_students\n"
+        "- 'cleanup data', 'clean data', 'deduplicate' => cleanup_data\n"
+        "- 'performance', 'check performance' => analytics_student\n"
+        "- 'hire students' => view_students\n\n"
+        f"User Prompt: '{user_prompt}'\n"
+        "Output JSON only, no code fences."
     )
-
-    response = model.generate_content(classification_prompt)
-    if not response.candidates:
+    resp = model.generate_content(classification_prompt)
+    if not resp.candidates:
         return {"type": "casual"}
 
-    content = ''.join(part.text for part in response.candidates[0].content.parts).strip()
-    content = remove_code_fences(content)
+    raw = resp.candidates[0].content.parts[0].text.strip()
+    raw = remove_code_fences(raw)
     try:
-        data = json.loads(content)
+        data = json.loads(raw)
+        # Force "type" if missing
         if "type" not in data:
             data["type"] = "casual"
-        # synonyms
-        if data["type"] == "firestore":
-            synonyms_map = {
-                "hire_students": "view_students",
-                "hire": "view_students",
-                "check_performance": "analytics_student",
-                "performance": "analytics_student",
-                "analytics": "analytics_student",
-                "clean data": "cleanup_data",
-                "cleanup": "cleanup_data",
-                "deduplicate": "cleanup_data"
-            }
-            raw_action = data.get("action", "").lower().strip()
-            if raw_action in synonyms_map:
-                data["action"] = synonyms_map[raw_action]
         return data
-    except:
+    except (json.JSONDecodeError, ValueError):
         return {"type": "casual"}
 
 ###############################################################################
@@ -526,13 +525,13 @@ def handle_analytics_call(params):
         return "Which student do you want to check performance for? Provide an ID or name."
 
 ###############################################################################
-# 15. Main State Machine
+# 15. The Main State Machine: Decide Casual or Firestore
 ###############################################################################
 def handle_state_machine(user_prompt):
+    # 1) Check if we are in a partial-add or partial-analytics scenario
     state = conversation_context["state"]
     pending_params = conversation_context["pending_params"]
 
-    # If we are waiting for partial info to add a student
     if state == STATE_AWAITING_STUDENT_INFO:
         desired_fields = ["name", "age", "class", "address", "phone", "guardian_name", "guardian_phone", "attendance", "grades"]
         extracted = extract_fields(user_prompt, desired_fields)
@@ -559,7 +558,6 @@ def handle_state_machine(user_prompt):
         else:
             return result.get("error", "Error adding student.")
 
-    # If we are waiting for which student to analyze
     elif state == STATE_AWAITING_ANALYTICS_TARGET:
         desired_fields = ["id", "name"]
         extracted = extract_fields(user_prompt, desired_fields)
@@ -572,6 +570,7 @@ def handle_state_machine(user_prompt):
             conversation_context["pending_params"] = {}
             conversation_context["last_intended_action"] = None
             return result.get("message", result.get("error", "Analytics error."))
+
         elif pending_params.get("name"):
             docs = db.collection("students").where("name", "==", pending_params["name"]).stream()
             matches = [d.to_dict() for d in docs]
@@ -593,27 +592,27 @@ def handle_state_machine(user_prompt):
         else:
             return "Which student do you want to check? Provide an ID or name."
 
-    # Otherwise, state = IDLE => classify new request
     else:
-        action_data = classify_user_input(user_prompt)
-        if action_data.get("type") == "casual":
-            # Just generate a casual response
+        # 2) We are IDLE, so let's ask Gemini if it's casual or firestore
+        classification_result = classify_casual_or_firestore(user_prompt)
+        if classification_result.get("type") == "casual":
+            # Just respond casually
             resp = model.generate_content(user_prompt)
             if resp.candidates:
                 return resp.candidates[0].content.parts[0].text.strip()
             else:
                 return "I'm at a loss for words..."
 
-        elif action_data.get("type") == "firestore":
-            action = action_data.get("action", "")
-            params = action_data.get("parameters", {})
+        elif classification_result.get("type") == "firestore":
+            action = classification_result.get("action", "")
+            params = classification_result.get("parameters", {})
 
+            # we handle synonyms ourselves if needed, or rely on Gemini to get it right
+            # Check which action:
             if action == "view_students":
-                # Show table in sliding panel
                 return build_students_table_html("Student Records")
 
             elif action == "cleanup_data":
-                # Deduplicate data by name
                 return cleanup_data()
 
             elif action == "add_student":
@@ -623,7 +622,6 @@ def handle_state_machine(user_prompt):
                     conversation_context["last_intended_action"] = "add_student"
                     return "Let's add a new student. What's their name?"
                 else:
-                    # Add directly
                     result, status = add_student(params)
                     if status == 200 and "message" in result:
                         funny_prompt = create_funny_prompt_for_new_student(params["name"])
@@ -660,22 +658,17 @@ def handle_state_machine(user_prompt):
                     return handle_analytics_call(params)
 
             else:
-                return f"Unknown action: {action}"
+                return f"Unknown Firestore action: {action}"
 
         else:
-            return "I couldn't classify your request. Please rephrase."
+            # If classification result is missing or incomplete
+            return "I'm not sure what you're asking. Is this casual conversation or a database action?"
 
 ###############################################################################
 # 16. Flask Routes
 ###############################################################################
 @app.route("/")
 def index():
-    """
-    Returns the updated HTML that supports:
-      - Slide-in table from the right
-      - Save button
-      - "Server is LIVE" banner
-    """
     return """
 <!DOCTYPE html>
 <html lang="en">
@@ -706,11 +699,11 @@ def index():
       display: flex;
       flex-direction: column;
       height: 80vh; /* 80% of the viewport height */
-      overflow: hidden; 
+      overflow: hidden;
     }
 
     .chat-header {
-      background-color: #343a40; 
+      background-color: #343a40;
       color: #fff;
       padding: 1rem;
       text-align: center;
@@ -771,9 +764,9 @@ def index():
     /* The sliding table container */
     #studentsSection {
       position: fixed;
-      top: 0; 
-      right: 0; 
-      width: 50%; 
+      top: 0;
+      right: 0;
+      width: 50%;
       height: 100%;
       background-color: #fff;
       border-left: 1px solid #ccc;
@@ -794,7 +787,6 @@ def index():
       to { transform: translateX(0); }
     }
 
-    /* Banner at bottom for server status */
     #serverStatus {
       position: fixed;
       bottom: 0; left: 0; right: 0;
@@ -840,10 +832,7 @@ def index():
     </div>
   </div>
 
-  <!-- The sliding table container on the right -->
   <div id="studentsSection"></div>
-
-  <!-- Server status banner -->
   <div id="serverStatus">Server is LIVE</div>
 
   <script
@@ -859,13 +848,11 @@ def index():
       const bubble = document.createElement('div');
       bubble.classList.add('chat-bubble', sender === 'user' ? 'user-message' : 'ai-message');
 
-      // If the AI text includes a table or #studentsSection markup, interpret as HTML
       if (sender === 'ai' && (text.includes("<table") || text.includes("studentsSection"))) {
         bubble.innerHTML = text;
       } else {
         bubble.textContent = text;
       }
-
       messagesContainer.appendChild(bubble);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
@@ -903,8 +890,7 @@ def index():
     }
 
     function processAIReply(reply) {
-      // If the reply includes the special <table> or #studentsSection, 
-      // we show it in the sliding panel
+      // If the reply includes <table or #studentsSection, show in side panel
       if (reply.includes("<table") || reply.includes("studentsSection")) {
         studentsSection.innerHTML = reply;
         studentsSection.classList.add('show');
@@ -913,12 +899,10 @@ def index():
       }
     }
 
-    // Called by the "Save" button in the table
+    // Called by Save button in table
     function saveTableEdits() {
-      // Real logic might parse the table and do an update.
-      // For now, just close the sliding panel.
       studentsSection.classList.remove('show');
-      addMessage("Table changes saved. Sliding panel closed.", 'ai');
+      addMessage("Table changes saved. Panel closed.", 'ai');
     }
   </script>
 </body>
@@ -946,10 +930,9 @@ def process_prompt():
         save_memory_to_firestore()
         return jsonify({"message": "Memory and context reset."}), 200
 
-    # Run the main state machine
+    # The main state machine
     reply = handle_state_machine(user_prompt)
 
-    # Add AI reply
     conversation_memory.append({"role": "AI", "content": reply})
     save_memory_to_firestore()
     return jsonify({"message": reply}), 200
