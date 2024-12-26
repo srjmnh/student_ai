@@ -75,11 +75,75 @@ function parseReply(reply) {
     tablePanel.innerHTML = reply;
     tablePanel.classList.add('show', 'animate__animated', 'animate__slideInRight');
     chatSection.classList.add('slideLeft');
+    initializeTableFunctionality(); // Initialize delete and add functionalities
   } else {
     addBubble(reply, false);
     // Optionally, show a toast notification
     showToast("New message received.", 'success');
   }
+}
+
+// Function to initialize table functionalities (delete and add)
+function initializeTableFunctionality() {
+  // Add event listeners to delete icons
+  const deleteButtons = tablePanel.querySelectorAll('.btn-delete-row');
+  deleteButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const row = button.closest('tr');
+      const studentId = row.querySelector('.student-id').innerText.trim();
+      if (confirm(`Are you sure you want to delete student ID ${studentId}?`)) {
+        deleteStudent(studentId, row);
+      }
+    });
+  });
+}
+
+// Function to delete a student via API
+async function deleteStudent(studentId, rowElement) {
+  try {
+    const response = await fetch('/process_prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: `Delete student with ID ${studentId}.` })
+    });
+    const data = await response.json();
+    if (data.message) {
+      showToast(data.message, 'success');
+      // Remove the row from the table
+      rowElement.remove();
+    } else if (data.error) {
+      showToast(data.error, 'danger');
+    }
+  } catch (err) {
+    showToast("Error deleting student.", 'danger');
+  }
+}
+
+// Function to add a new row to the table
+function addNewRow() {
+  const tbody = tablePanel.querySelector('table tbody');
+  const newRow = document.createElement('tr');
+
+  newRow.innerHTML = `
+    <td class="student-id" contenteditable="true">ID</td>
+    <td contenteditable="true">Name</td>
+    <td contenteditable="true">Age</td>
+    <td contenteditable="true">Class</td>
+    <td contenteditable="true">Address</td>
+    <td contenteditable="true">Phone</td>
+    <td contenteditable="true">Guardian</td>
+    <td contenteditable="true">Guardian Phone</td>
+    <td contenteditable="true">Attendance</td>
+    <td contenteditable="true">Grades</td>
+    <td>
+      <button class="btn btn-danger btn-delete-row" aria-label="Delete Row">
+        <i class="fas fa-trash-alt"></i>
+      </button>
+    </td>
+  `;
+
+  tbody.appendChild(newRow);
+  initializeTableFunctionality(); // Re-initialize to attach event listeners to new delete button
 }
 
 // Function to save table edits
@@ -90,7 +154,7 @@ async function saveTableEdits() {
     const cells = r.querySelectorAll('td');
     if (!cells.length) return;
     const sid = cells[0].innerText.trim();
-    if (!sid) return;
+    if (!sid || sid === 'ID') return; // Skip rows without valid IDs
 
     let name = cells[1].innerText.trim();
     let age = cells[2].innerText.trim();
@@ -119,6 +183,11 @@ async function saveTableEdits() {
     });
   });
 
+  if (updates.length === 0) {
+    showToast("No valid changes to save.", 'warning');
+    return;
+  }
+
   try {
     const res = await fetch('/bulk_update_students', {
       method: 'POST',
@@ -133,12 +202,12 @@ async function saveTableEdits() {
       addBubble("Error saving changes: " + (data.error || 'unknown'), false);
       showToast("Error saving changes.", 'danger');
     }
+    tablePanel.classList.remove('show', 'animate__slideInRight');
+    chatSection.classList.remove('slideLeft');
   } catch (err) {
     addBubble("Error saving changes: " + err, false);
     showToast("Error saving changes.", 'danger');
   }
-  tablePanel.classList.remove('show', 'animate__slideInRight');
-  chatSection.classList.remove('slideLeft');
 }
 
 // Dark Mode Toggle Function
@@ -177,6 +246,12 @@ function hideHomeScreen() {
     homeScreen.style.display = 'none';
     chatSection.classList.add('show');
   }, 500); // Match the animation duration in CSS (0.5s)
+}
+
+// Close Table Panel Function
+function closeTablePanel() {
+  tablePanel.classList.remove('show', 'animate__slideInRight');
+  chatSection.classList.remove('slideLeft');
 }
 
 // Typing Indicator Functions

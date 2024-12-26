@@ -14,6 +14,9 @@
   <!-- Animate.css for animations -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
   
+  <!-- Font Awesome for Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+  
   <!-- Custom CSS -->
   <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
 </head>
@@ -46,6 +49,18 @@
   <!-- Table Panel -->
   <div id="tablePanel" class="animate__animated">
     <!-- Content loaded dynamically -->
+    <div class="table-header">
+      <h4>Student Records</h4>
+      <button class="btn btn-danger btn-close-table" onclick="closeTablePanel()" aria-label="Close Table View">
+        <i class="fas fa-times"></i> Close
+      </button>
+    </div>
+    <div id="tableContent">
+      <!-- Editable table will be injected here -->
+    </div>
+    <button class="btn btn-success btn-add-row" onclick="addNewRow()" aria-label="Add New Row">
+      <i class="fas fa-plus"></i> Add Student
+    </button>
   </div>
 
   <!-- Toast Notification Container -->

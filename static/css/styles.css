@@ -238,8 +238,44 @@ body.dark-mode #tablePanel {
   transform: translateX(0%);
 }
 
-#chatSection.slideLeft {
-  transform: translateX(-20%);
+.table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.btn-close-table {
+  border-radius: 50%;
+  padding: 0.5rem;
+  background: #dc3545;
+  color: #ffffff;
+  border: none;
+  transition: background 0.3s, transform 0.3s;
+}
+
+.btn-close-table:hover {
+  background: #c82333;
+  transform: scale(1.1);
+}
+
+.btn-add-row {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 2rem;
+  border-radius: 50%;
+  padding: 1rem;
+  background: #28a745;
+  color: #ffffff;
+  border: none;
+  font-size: 1.5rem;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  transition: background 0.3s, transform 0.3s;
+}
+
+.btn-add-row:hover {
+  background: #218838;
+  transform: scale(1.1);
 }
 
 /* Animations */
@@ -251,16 +287,6 @@ body.dark-mode #tablePanel {
 @keyframes slideIn {
   from { transform: translateX(-20px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
-}
-
-@keyframes fadeInDown {
-  from { opacity: 0; transform: translateY(-20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 /* Responsive Design */
@@ -289,5 +315,28 @@ body.dark-mode #tablePanel {
   .btn-continue {
     padding: 0.5rem 1.5rem;
     font-size: 0.9rem;
+  }
+  .chat-header h4 {
+    font-size: 1.2rem;
+  }
+  .chat-footer {
+    padding: 1rem 1.5rem;
+  }
+  .input-group input {
+    font-size: 0.9rem;
+  }
+  .input-group button {
+    padding: 0.6rem 1.2rem;
+    font-size: 0.9rem;
+  }
+  .chat-bubble {
+    max-width: 90%;
+    font-size: 0.9rem;
+  }
+  .btn-add-row {
+    right: 1rem;
+    bottom: 1rem;
+    padding: 0.8rem;
+    font-size: 1.2rem;
   }
 }
