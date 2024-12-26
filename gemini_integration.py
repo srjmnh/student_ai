@@ -662,16 +662,16 @@ def handle_state_machine(user_prompt):
             return "I'm not sure. Is it casual or a Firestore request?"
 
 ###############################################################################
-# 16. Flask + HTML with Dark Mode Toggle
+# 16. Flask + HTML with Home Screen and Dark Mode Toggle
 ###############################################################################
 @app.route("/")
 def index():
     """
-    Return the chat UI with random background music, comedic summary, etc.
-    We'll insert the comedic summary as a default bubble on load (via JS).
-    Added Dark Mode toggle functionality.
+    Return the Home Screen with summary and a "Continue" button.
+    Upon clicking "Continue", the Home Screen fades out and the chatbot interface appears.
+    The font is changed to "Roboto" for a modern look.
     """
-    # We'll embed the comedic summary into the HTML so that it shows as a bubble on load
+    # We'll embed the comedic summary into the HTML so that it shows on the Home Screen
     global welcome_summary
     safe_summary = welcome_summary.replace('"','\\"').replace('\n','\\n')
     return f"""
@@ -681,11 +681,16 @@ def index():
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Super Student Management</title>
+  
+  <!-- Google Font: Roboto -->
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  
   <link rel="stylesheet" 
     href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"/>
   <style>
     body {{
       margin:0; padding:0; background:#f8f9fa;
+      font-family: 'Roboto', sans-serif;
       transition: background 0.3s, color 0.3s;
     }}
     body.dark-mode {{
@@ -696,6 +701,7 @@ def index():
       border-radius:0.5rem; box-shadow:0 4px 10px rgba(0,0,0,0.1);
       display:flex; flex-direction:column; height:80vh; overflow:hidden;
       transition: transform 0.5s ease, background 0.3s, color 0.3s;
+      font-family: 'Roboto', sans-serif;
     }}
     body.dark-mode .chat-wrap {{
       background:#333; color:#fff;
@@ -717,6 +723,7 @@ def index():
       margin-bottom:0.75rem; padding:0.75rem 1rem; border-radius:15px; 
       max-width:75%; word-wrap:break-word; white-space:pre-wrap;
       transition: background 0.3s ease;
+      font-family: 'Roboto', sans-serif;
     }}
     .chat-bubble:hover {{
       background:#e2e2e2;
@@ -757,6 +764,38 @@ def index():
       background:#fafbcd;
     }}
 
+    /* Home Screen Styles */
+    #homeScreen {{
+      position:fixed; top:0; left:0; width:100%; height:100%;
+      background:#fff; display:flex; flex-direction:column;
+      justify-content:center; align-items:center; text-align:center;
+      z-index:1000; transition: opacity 0.5s ease, visibility 0.5s ease;
+      font-family: 'Roboto', sans-serif;
+    }}
+    body.dark-mode #homeScreen {{
+      background:#1d1d1d; color:#fafafa;
+    }}
+    #homeScreen.hidden {{
+      opacity:0; visibility:hidden;
+    }}
+    #homeScreen h1 {{
+      font-size:2rem; margin-bottom:2rem;
+    }}
+    #homeScreen button {{
+      padding:0.75rem 1.5rem; font-size:1rem; border:none; border-radius:5px;
+      background:#007bff; color:#fff; cursor:pointer;
+      transition: background 0.3s ease;
+    }}
+    #homeScreen button:hover {{
+      background:#0056b3;
+    }}
+    body.dark-mode #homeScreen button {{
+      background:#28a745;
+    }}
+    body.dark-mode #homeScreen button:hover {{
+      background:#1e7e34;
+    }}
+
     /* Mobile-friendly adjustments */
     @media (max-width:576px) {{
       .chat-wrap {{
@@ -775,6 +814,12 @@ def index():
   </style>
 </head>
 <body>
+  <!-- Home Screen -->
+  <div id="homeScreen">
+    <h1>{safe_summary}</h1>
+    <button onclick="hideHomeScreen()">Continue</button>
+  </div>
+
   <!-- Background music with random track from an array of URLs -->
   <audio id="bgMusic" autoplay loop></audio>
 
@@ -806,66 +851,64 @@ def index():
       "https://www.bensound.com/bensound-music/bensound-funnysong.mp3"
     ];
 
-    window.addEventListener('DOMContentLoaded', () => {{
+    window.addEventListener('DOMContentLoaded', () => {
       const bgMusic = document.getElementById('bgMusic');
       const randomUrl = musicTracks[Math.floor(Math.random() * musicTracks.length)];
       bgMusic.src = randomUrl;
 
       // Show comedic summary as an AI bubble on load
-      const summary = "{safe_summary}";
-      if(summary.trim()) {{
-        addBubble(summary, false); // AI bubble
-      }}
-    }});
+      // Note: The summary is now displayed on the Home Screen
+    });
 
     const chatBody = document.getElementById('chatBody');
     const userInput = document.getElementById('userInput');
     const chatSection= document.getElementById('chatSection');
     const tablePanel= document.getElementById('tablePanel');
+    const homeScreen = document.getElementById('homeScreen');
 
-    function addBubble(text, isUser=false) {{
+    function addBubble(text, isUser=false) {
       const bubble= document.createElement('div');
       bubble.classList.add('chat-bubble', isUser ? 'user-msg' : 'ai-msg');
       bubble.innerHTML = text;
       chatBody.appendChild(bubble);
       chatBody.scrollTop= chatBody.scrollHeight;
-    }}
+    }
 
-    async function sendPrompt() {{
+    async function sendPrompt() {
       const prompt= userInput.value.trim();
       if(!prompt) return;
       addBubble(prompt,true);
       userInput.value='';
 
-      try {{
-        const resp= await fetch('/process_prompt',{{
+      try {
+        const resp= await fetch('/process_prompt',{
           method:'POST',
-          headers:{{'Content-Type':'application/json'}},
-          body: JSON.stringify({{ prompt }})
-        }});
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ prompt })
+        });
         const data= await resp.json();
         const reply= data.message || data.error || 'No response.';
         parseReply(reply);
-      }} catch(err) {{
+      } catch(err) {
         addBubble("Error connecting to server: "+err,false);
-      }}
-    }}
+      }
+    }
 
-    function parseReply(reply) {{
+    function parseReply(reply) {
       // If reply includes <table or 'slideFromRight', we show in tablePanel
-      if(reply.includes('<table') || reply.includes('slideFromRight')) {{
+      if(reply.includes('<table') || reply.includes('slideFromRight')) {
         tablePanel.innerHTML= reply;
         tablePanel.classList.add('show');
         chatSection.classList.add('slideLeft');
-      }} else {{
+      } else {
         addBubble(reply,false);
-      }}
-    }}
+      }
+    }
 
-    async function saveTableEdits() {{
+    async function saveTableEdits() {
       const rows= tablePanel.querySelectorAll('table tbody tr');
       const updates= [];
-      rows.forEach(r => {{
+      rows.forEach(r => {
         const cells= r.querySelectorAll('td');
         if(!cells.length) return;
         const sid= cells[0].innerText.trim();
@@ -880,11 +923,11 @@ def index():
         let guardianPhone= cells[7].innerText.trim();
         let attendance= cells[8].innerText.trim();
         let grades= cells[9].innerText.trim();
-        try {{
+        try {
           grades= JSON.parse(grades);
-        }} catch(e){{}}
+        } catch(e){}
 
-        updates.push({{
+        updates.push({
           id: sid,
           name,
           age,
@@ -895,65 +938,62 @@ def index():
           guardian_phone: guardianPhone,
           attendance,
           grades
-        }});
-      }});
+        });
+      });
 
-      try {{
-        const res= await fetch('/bulk_update_students',{{
+      try {
+        const res= await fetch('/bulk_update_students',{
           method:'POST',
-          headers:{{'Content-Type':'application/json'}},
-          body: JSON.stringify({{ updates }})
-        }});
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ updates })
+        });
         const data= await res.json();
-        if(data.success) {{
+        if(data.success) {
           addBubble("Changes saved to Firebase!",false);
-        }} else {{
+        } else {
           addBubble("Error saving changes: "+(data.error||'unknown'), false);
-        }}
-      }} catch(err) {{
+        }
+      } catch(err) {
         addBubble("Error saving changes: "+err, false);
-      }}
+      }
       tablePanel.classList.remove('show');
       chatSection.classList.remove('slideLeft');
-    }}
+    }
 
     // Dark Mode Toggle Function
-    function toggleDarkMode() {{
+    function toggleDarkMode() {
       document.body.classList.toggle('dark-mode');
-      // Update the toggle button text based on the current mode
       const toggleBtn = document.querySelector('.dark-toggle');
-      if(document.body.classList.contains('dark-mode')) {{
+      if(document.body.classList.contains('dark-mode')) {
         toggleBtn.textContent = '☀️ Light Mode';
-      }} else {{
+        localStorage.setItem('dark-mode', 'enabled');
+      } else {
         toggleBtn.textContent = '🌙 Dark Mode';
-      }}
-    }}
+        localStorage.setItem('dark-mode', 'disabled');
+      }
+    }
 
     // Initialize the toggle button text based on saved preference
-    window.addEventListener('load', () => {{
+    window.addEventListener('load', () => {
       const toggleBtn = document.querySelector('.dark-toggle');
       // Check if dark mode was previously enabled
       const darkMode = localStorage.getItem('dark-mode');
-      if(darkMode === 'enabled') {{
+      if(darkMode === 'enabled') {
         document.body.classList.add('dark-mode');
         toggleBtn.textContent = '☀️ Light Mode';
-      }} else {{
+      } else {
         toggleBtn.textContent = '🌙 Dark Mode';
-      }}
-    }});
+      }
+    });
 
-    // Save dark mode preference in localStorage
-    function toggleDarkMode() {{
-      document.body.classList.toggle('dark-mode');
-      const toggleBtn = document.querySelector('.dark-toggle');
-      if(document.body.classList.contains('dark-mode')) {{
-        toggleBtn.textContent = '☀️ Light Mode';
-        localStorage.setItem('dark-mode', 'enabled');
-      }} else {{
-        toggleBtn.textContent = '🌙 Dark Mode';
-        localStorage.setItem('dark-mode', 'disabled');
-      }}
-    }}
+    // Home Screen Functionality
+    function hideHomeScreen() {
+      homeScreen.classList.add('hidden');
+      // After transition, hide the home screen completely
+      setTimeout(() => {
+        homeScreen.style.display = 'none';
+      }, 500);
+    }
   </script>
 </body>
 </html>
@@ -1021,7 +1061,7 @@ def load_on_start():
         conversation_context.update(ctx)
 
     summary = generate_comedic_summary_of_past_activities()
-    welcome_summary = summary  # We'll show this bubble on page load
+    welcome_summary = summary  # We'll show this on the Home Screen
     conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
     save_memory_to_firestore()
     logging.info("Startup summary: " + summary)
