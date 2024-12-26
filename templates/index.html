@@ -55,6 +55,13 @@
         <i class="fas fa-times"></i> Close
       </button>
     </div>
+    <div class="filter-section">
+      <label for="classFilter">Filter by Class:</label>
+      <select id="classFilter" class="form-select" onchange="filterStudentsByClass()">
+        <option value="">All Classes</option>
+        <!-- Dynamically populated options -->
+      </select>
+    </div>
     <div id="tableContent">
       <!-- Editable table will be injected here -->
     </div>

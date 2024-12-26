@@ -1,29 +1,14 @@
 // scripts.js
 
-// Array of random music URLs (if you have background music)
-const musicTracks = [
-  "https://www.bensound.com/bensound-music/bensound-anewbeginning.mp3",
-  "https://www.bensound.com/bensound-music/bensound-ukulele.mp3",
-  "https://www.bensound.com/bensound-music/bensound-funnysong.mp3"
-];
-
-window.addEventListener('DOMContentLoaded', () => {
-  const bgMusic = document.getElementById('bgMusic');
-  if (bgMusic) {
-    const randomUrl = musicTracks[Math.floor(Math.random() * musicTracks.length)];
-    bgMusic.src = randomUrl;
-    bgMusic.play();
-  }
-});
-
 // Elements
 const chatBody = document.getElementById('chatBody');
 const userInput = document.getElementById('userInput');
 const chatSection = document.getElementById('chatSection');
 const tablePanel = document.getElementById('tablePanel');
 const homeScreen = document.getElementById('homeScreen');
+const classFilter = document.getElementById('classFilter');
 
-// Toast Notification (Optional Enhancement)
+// Toast Notification
 const toastElement = document.getElementById('liveToast');
 const toastBody = document.getElementById('toastBody');
 const bsToast = new bootstrap.Toast(toastElement);
@@ -79,6 +64,7 @@ function parseReply(reply) {
     tablePanel.classList.add('show', 'animate__animated', 'animate__slideInRight');
     chatSection.classList.add('slideLeft');
     initializeTableFunctionality(); // Initialize delete and add functionalities
+    populateClassFilter(); // Populate the class filter dropdown
   } else {
     addBubble(reply, false);
     // Optionally, show a toast notification
@@ -176,10 +162,126 @@ async function saveTableEdits() {
       grades = JSON.parse(grades);
     } catch (e) { }
 
+    // Validation: Ensure 'name' and 'class' are provided
+    if (!name || !sclass) {
+      showToast(`Student ID ${sid} is missing 'Name' or 'Class'. Please fill them in.`, 'warning');
+      return;
+    }
+
     updates.push({
       id: sid,
       name,
-      age,
+      age: _safe_int(age),
+      class: sclass,
+      address,
+      phone,
+      guardian_name: guardian,
+      guardian_phone: guardianPhone,
+      attendance,
+      grades
+    });
+  });
+
+  if (updates.length === 0) {
+    showToast("No valid changes to save.", 'warning');
+    return;
+  }
+
+  try {
+    const res = await fetch('/bulk_update_students', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates })
+    });
+    const data = await res.json();
+    if (data.success) {
+      addBubble("Changes saved to Firebase!", false);
+      showToast("Changes saved successfully!", 'success');
+    } else {
+      addBubble("Error saving changes: " + (data.error || 'unknown'), false);
+      showToast("Error saving changes.", 'danger');
+    }
+    tablePanel.classList.remove('show', 'animate__slideInRight');
+    chatSection.classList.remove('slideLeft');
+  } catch (err) {
+    addBubble("Error saving changes: " + err, false);
+    showToast("Error saving changes.", 'danger');
+  }
+}
+
+// Function to populate class filter dropdown
+function populateClassFilter() {
+  const select = classFilter;
+  // Clear existing options except the first
+  while (select.options.length > 1) {
+    select.remove(1);
+  }
+
+  // Fetch unique classes from Firestore
+  fetch('/get_unique_classes')
+    .then(response => response.json())
+    .then(data => {
+      const classes = data.classes || [];
+      classes.forEach(cls => {
+        const option = document.createElement('option');
+        option.value = cls;
+        option.textContent = cls;
+        select.appendChild(option);
+      });
+    })
+    .catch(err => {
+      console.error("Error fetching classes:", err);
+      showToast("Error fetching classes.", 'danger');
+    });
+}
+
+// Function to filter students by class
+function filterStudentsByClass() {
+  const selectedClass = classFilter.value;
+  const rows = tablePanel.querySelectorAll('table tbody tr');
+  rows.forEach(row => {
+    const rowClass = row.querySelector('.class-cell').innerText.trim();
+    if (selectedClass === "" || rowClass === selectedClass) {
+      row.style.display = "";
+    } else {
+      row.style.display = "none";
+    }
+  });
+}
+
+// Function to save table edits
+async function saveTableEdits() {
+  const rows = tablePanel.querySelectorAll('table tbody tr');
+  const updates = [];
+  rows.forEach(r => {
+    const cells = r.querySelectorAll('td');
+    if (!cells.length) return;
+    const sid = cells[0].innerText.trim();
+    if (!sid || sid === 'ID') return; // Skip rows without valid IDs
+
+    let name = cells[1].innerText.trim();
+    let age = cells[2].innerText.trim();
+    let sclass = cells[3].innerText.trim();
+    let address = cells[4].innerText.trim();
+    let phone = cells[5].innerText.trim();
+    let guardian = cells[6].innerText.trim();
+    let guardianPhone = cells[7].innerText.trim();
+    let attendance = cells[8].innerText.trim();
+    let grades = cells[9].innerText.trim();
+    try {
+      grades = JSON.parse(grades);
+    } catch (e) { }
+
+    // Validation: Ensure 'name' and 'class' are provided
+    if (!name || !sclass) {
+      showToast(`Student ID ${sid} is missing 'Name' or 'Class'. Please fill them in.`, 'warning');
+      return;
+    }
+
+    updates.push({
+      id: sid,
+      name,
+      age: _safe_int(age),
       class: sclass,
       address,
       phone,
@@ -276,6 +378,46 @@ function removeTypingIndicator() {
   if (typingBubble) {
     typingBubble.remove();
   }
+}
+
+// Function to populate class filter dropdown
+function populateClassFilter() {
+  const select = classFilter;
+  // Clear existing options except the first
+  while (select.options.length > 1) {
+    select.remove(1);
+  }
+
+  // Fetch unique classes from Firestore
+  fetch('/get_unique_classes')
+    .then(response => response.json())
+    .then(data => {
+      const classes = data.classes || [];
+      classes.forEach(cls => {
+        const option = document.createElement('option');
+        option.value = cls;
+        option.textContent = cls;
+        select.appendChild(option);
+      });
+    })
+    .catch(err => {
+      console.error("Error fetching classes:", err);
+      showToast("Error fetching classes.", 'danger');
+    });
+}
+
+// Function to filter students by class
+function filterStudentsByClass() {
+  const selectedClass = classFilter.value;
+  const rows = tablePanel.querySelectorAll('table tbody tr');
+  rows.forEach(row => {
+    const rowClass = row.querySelector('.class-cell').innerText.trim();
+    if (selectedClass === "" || rowClass === selectedClass) {
+      row.style.display = "";
+    } else {
+      row.style.display = "none";
+    }
+  });
 }
 
 // Ensure proper behavior on window resize for mobile responsiveness

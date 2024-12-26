@@ -179,7 +179,7 @@ def bulk_update_students(student_list):
             continue
 
         # Validate required fields
-        if not st.get("name") or not isinstance(st.get("age"), int):
+        if not st.get("name") or not st.get("class") or not isinstance(st.get("age"), int):
             logging.warning(f"Invalid data for student ID {sid}. Skipping update.")
             continue
 
@@ -208,7 +208,7 @@ def cleanup_data():
     doc_map = {}
     for doc in docs:
         data = doc.to_dict()
-        data["id"] = doc.id  # Real Firestore doc ID
+        data["id"] = doc.id  # Firestore doc ID
         doc_map[doc.id] = doc  # Keep doc reference
         students.append(data)
 
@@ -266,10 +266,13 @@ def build_students_table_html(heading="Student Records"):
     try:
         all_docs = db.collection("students").stream()
         students = []
+        classes_set = set()
         for doc in all_docs:
             st = doc.to_dict()
             st["id"] = doc.id  # Firestore doc ID
             students.append(st)
+            if st.get("class"):
+                classes_set.add(st["class"])
 
         if not students:
             logging.info("No students found in Firestore.")
@@ -291,7 +294,7 @@ def build_students_table_html(heading="Student Records"):
             <th contenteditable="false">Guardian Phone</th>
             <th contenteditable="false">Attendance</th>
             <th contenteditable="false">Grades</th>
-            <th>Actions</th> <!-- New Header for Actions -->
+            <th>Actions</th> <!-- Header for Actions -->
           </tr>
         </thead>
         <tbody>
@@ -317,7 +320,7 @@ def build_students_table_html(heading="Student Records"):
           <td class="student-id" style="color:#555; user-select:none;">{sid}</td>
           <td contenteditable="true">{name}</td>
           <td contenteditable="true">{age}</td>
-          <td contenteditable="true">{sclass}</td>
+          <td contenteditable="true" class="class-cell">{sclass}</td>
           <td contenteditable="true">{address}</td>
           <td contenteditable="true">{phone}</td>
           <td contenteditable="true">{guardian_name}</td>
@@ -379,8 +382,9 @@ def create_comedic_confirmation(action, name=None, student_id=None):
 def add_student(params):
     try:
         name = params.get("name")
-        if not name:
-            return {"error": "Missing 'name' to add student."}, 400
+        sclass = params.get("class")
+        if not name or not sclass:
+            return {"error": "Missing 'name' or 'class' to add student."}, 400
         age = _safe_int(params.get("age"))
         # Check if ID is provided; if not, generate one
         sid = params.get("id") or generate_student_id(name, age)
@@ -388,7 +392,7 @@ def add_student(params):
             "id": sid,
             "name": name,
             "age": age,
-            "class": params.get("class"),
+            "class": sclass,
             "address": params.get("address"),
             "phone": params.get("phone"),
             "guardian_name": params.get("guardian_name"),
@@ -428,6 +432,11 @@ def update_student(params):
                 })
                 update_fields["grades_history"] = hist
             update_fields[k] = v
+        # Validation: Ensure 'name' and 'class' are not empty
+        if 'name' in update_fields and not update_fields['name']:
+            return {"error": "The 'name' field cannot be empty."}, 400
+        if 'class' in update_fields and not update_fields['class']:
+            return {"error": "The 'class' field cannot be empty."}, 400
         doc_ref.update(update_fields)
         log_activity("UPDATE_STUDENT", f"Updated {sid} with {update_fields}")
         c = create_comedic_confirmation("update_student", student_id=sid)
@@ -562,8 +571,13 @@ def handle_state_machine(user_prompt):
         found = extract_fields(user_prompt, desired)
         for k, v in found.items():
             pend[k] = v
-        if not pend.get("name"):
-            return "I still need the student's name. Please provide it or type 'cancel'."
+        if not pend.get("name") or not pend.get("class"):
+            missing = []
+            if not pend.get("name"):
+                missing.append("'name'")
+            if not pend.get("class"):
+                missing.append("'class'")
+            return f"I still need the student's {' and '.join(missing)}. Please provide them or type 'cancel'."
 
         out, status = add_student(pend)
         conversation_context["state"] = STATE_IDLE
@@ -625,15 +639,17 @@ def handle_state_machine(user_prompt):
             a = c.get("action", "")
             p = c.get("parameters", {})
             if a == "view_students":
-                return build_students_table_html("Student Records")
+                # Check if class filter is applied
+                cls = p.get("class")
+                return build_students_table_html(f"Student Records{' for Class ' + cls if cls else ''}")
             elif a == "cleanup_data":
                 return cleanup_data()
             elif a == "add_student":
-                if not p.get("name"):
+                if not p.get("name") or not p.get("class"):
                     conversation_context["state"] = STATE_AWAITING_STUDENT_INFO
                     conversation_context["pending_params"] = p
                     conversation_context["last_intended_action"] = "add_student"
-                    return "Let's add a new student. What's their name?"
+                    return "Let's add a new student. What's their name and class?"
                 out, sts = add_student(p)
                 if sts == 200 and "message" in out:
                     funny = create_funny_prompt_for_new_student(p["name"])
@@ -647,7 +663,7 @@ def handle_state_machine(user_prompt):
                     return out.get("error", "Error adding student.")
             elif a == "update_student":
                 if not p.get("id"):
-                    return "To update, we need an 'id'."
+                    return "To update, we need an 'id'. Please provide the student's ID."
                 out, sts = update_student(p)
                 return out.get("message", out.get("error", "Error."))
             elif a == "delete_student":
@@ -695,7 +711,25 @@ def bulk_update_students_route():
     return jsonify({"success": True, "updated_ids": updated_ids}), 200
 
 ###############################################################################
-# 18. Main Conversation Route
+# 18. Get Unique Classes Route
+###############################################################################
+@app.route("/get_unique_classes", methods=["GET"])
+def get_unique_classes():
+    try:
+        all_docs = db.collection("students").stream()
+        classes_set = set()
+        for doc in all_docs:
+            st = doc.to_dict()
+            cls = st.get("class")
+            if cls:
+                classes_set.add(cls)
+        return jsonify({"classes": sorted(list(classes_set))}), 200
+    except Exception as e:
+        logging.error(f"❌ Error fetching unique classes: {e}")
+        return jsonify({"error": "Failed to fetch classes."}), 500
+
+###############################################################################
+# 19. Main Conversation Route
 ###############################################################################
 @app.route("/process_prompt", methods=["POST"])
 def process_prompt():
@@ -727,7 +761,7 @@ def process_prompt():
     return jsonify({"message": reply}), 200
 
 ###############################################################################
-# 19. Global Error Handler
+# 20. Global Error Handler
 ###############################################################################
 @app.errorhandler(Exception)
 def handle_exc(e):
@@ -735,7 +769,7 @@ def handle_exc(e):
     return jsonify({"error": "An internal error occurred."}), 500
 
 ###############################################################################
-# 20. On Startup => Load Memory + Summaries
+# 21. On Startup => Load Memory + Summaries
 ###############################################################################
 @app.before_first_request
 def load_on_start():
@@ -753,7 +787,7 @@ def load_on_start():
     logging.info("Startup summary: " + summary)
 
 ###############################################################################
-# 21. Run the Flask Application
+# 22. Run the Flask Application
 ###############################################################################
 if __name__ == "__main__":
     mem, ctx = load_memory_from_firestore()
