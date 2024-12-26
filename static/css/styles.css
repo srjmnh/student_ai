@@ -278,6 +278,44 @@ body.dark-mode #tablePanel {
   transform: scale(1.1);
 }
 
+.btn-add-row:active {
+  transform: scale(0.95);
+}
+
+.btn-delete-row {
+  border-radius: 50%;
+  padding: 0.3rem 0.5rem;
+  background: #dc3545;
+  color: #ffffff;
+  border: none;
+  transition: background 0.3s, transform 0.3s;
+}
+
+.btn-delete-row:hover {
+  background: #c82333;
+  transform: scale(1.1);
+}
+
+.btn-save-changes {
+  background: #007bff;
+  color: #ffffff;
+  border-radius: 25px;
+  padding: 0.5rem 1rem;
+  transition: background 0.3s, transform 0.3s;
+  cursor: pointer;
+  border: none;
+  font-weight: 600;
+}
+
+.btn-save-changes:hover {
+  background: #0056b3;
+  transform: scale(1.05);
+}
+
+.btn-save-changes:active {
+  transform: scale(0.95);
+}
+
 /* Animations */
 @keyframes fadeIn {
   from { opacity: 0; }

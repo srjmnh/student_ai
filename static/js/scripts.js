@@ -1,6 +1,6 @@
 // scripts.js
 
-// Array of random music URLs
+// Array of random music URLs (if you have background music)
 const musicTracks = [
   "https://www.bensound.com/bensound-music/bensound-anewbeginning.mp3",
   "https://www.bensound.com/bensound-music/bensound-ukulele.mp3",
@@ -9,8 +9,11 @@ const musicTracks = [
 
 window.addEventListener('DOMContentLoaded', () => {
   const bgMusic = document.getElementById('bgMusic');
-  const randomUrl = musicTracks[Math.floor(Math.random() * musicTracks.length)];
-  bgMusic.src = randomUrl;
+  if (bgMusic) {
+    const randomUrl = musicTracks[Math.floor(Math.random() * musicTracks.length)];
+    bgMusic.src = randomUrl;
+    bgMusic.play();
+  }
 });
 
 // Elements
@@ -91,6 +94,10 @@ function initializeTableFunctionality() {
     button.addEventListener('click', () => {
       const row = button.closest('tr');
       const studentId = row.querySelector('.student-id').innerText.trim();
+      if (studentId === 'ID') {
+        showToast("Cannot delete header row.", 'warning');
+        return;
+      }
       if (confirm(`Are you sure you want to delete student ID ${studentId}?`)) {
         deleteStudent(studentId, row);
       }

@@ -178,6 +178,11 @@ def bulk_update_students(student_list):
             logging.warning(f"Document not found for ID {sid}")
             continue
 
+        # Validate required fields
+        if not st.get("name") or not isinstance(st.get("age"), int):
+            logging.warning(f"Invalid data for student ID {sid}. Skipping update.")
+            continue
+
         fields_to_update = {}
         for k, v in st.items():
             if k == "id":
@@ -286,6 +291,7 @@ def build_students_table_html(heading="Student Records"):
             <th contenteditable="false">Guardian Phone</th>
             <th contenteditable="false">Attendance</th>
             <th contenteditable="false">Grades</th>
+            <th>Actions</th> <!-- New Header for Actions -->
           </tr>
         </thead>
         <tbody>
@@ -308,7 +314,7 @@ def build_students_table_html(heading="Student Records"):
 
             row_html = f"""
         <tr>
-          <td style="color:#555; user-select:none;">{sid}</td>
+          <td class="student-id" style="color:#555; user-select:none;">{sid}</td>
           <td contenteditable="true">{name}</td>
           <td contenteditable="true">{age}</td>
           <td contenteditable="true">{sclass}</td>
@@ -318,6 +324,11 @@ def build_students_table_html(heading="Student Records"):
           <td contenteditable="true">{guardian_phone}</td>
           <td contenteditable="true">{attendance}</td>
           <td contenteditable="true">{grades}</td>
+          <td>
+            <button class="btn btn-danger btn-delete-row" aria-label="Delete Row">
+              <i class="fas fa-trash-alt"></i>
+            </button>
+          </td>
         </tr>
         """
             html += row_html
@@ -325,7 +336,7 @@ def build_students_table_html(heading="Student Records"):
         html += """
         </tbody>
       </table>
-      <button class="btn btn-success mt-3" onclick="saveTableEdits()">Save</button>
+      <button class="btn btn-success mt-3" onclick="saveTableEdits()">Save Changes</button>
     </div>
     """
         logging.info(f"Built students table with {len(students)} entries.")
@@ -371,7 +382,8 @@ def add_student(params):
         if not name:
             return {"error": "Missing 'name' to add student."}, 400
         age = _safe_int(params.get("age"))
-        sid = generate_student_id(name, age)
+        # Check if ID is provided; if not, generate one
+        sid = params.get("id") or generate_student_id(name, age)
         doc_data = {
             "id": sid,
             "name": name,
@@ -574,7 +586,7 @@ def handle_state_machine(user_prompt):
         for k, v in found.items():
             pend[k] = v
         if pend.get("id"):
-            out, sts = analytics_student(pend)
+            out, stat = analytics_student(pend)
             conversation_context["state"] = STATE_IDLE
             conversation_context["pending_params"] = {}
             conversation_context["last_intended_action"] = None
