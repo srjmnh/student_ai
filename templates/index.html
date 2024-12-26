@@ -3,13 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Ensures mobile responsiveness -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  
-  <title>Advanced Student Management Chat</title>
-  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Super Student Management Chat</title>
+
   <!-- Bootstrap 5 CSS -->
-  <link
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+  <link 
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" 
     rel="stylesheet"
   />
 
@@ -22,20 +21,20 @@
     }
 
     .chat-container {
-      max-width: 600px;
+      max-width: 700px;
       margin: 2rem auto;
-      border-radius: 0.5rem;
       background-color: #fff;
+      border-radius: 0.5rem;
       box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-      overflow: hidden; /* Keep footer attached to the bottom */
       display: flex;
       flex-direction: column;
-      height: 80vh; /* Example fixed vertical space (80% of view height) */
+      height: 80vh; /* 80% of the viewport height */
+      overflow: hidden; /* Hide any overflow beyond container */
     }
 
     /* Header */
     .chat-header {
-      background-color: #343a40; /* Dark color for header */
+      background-color: #343a40; 
       color: #fff;
       padding: 1rem;
       text-align: center;
@@ -54,19 +53,37 @@
       border-radius: 15px;
       max-width: 75%;
       word-wrap: break-word;
+      white-space: pre-wrap; /* Keep new lines in the message */
     }
 
     .user-message {
       background-color: #007bff;
       color: #fff;
-      align-self: flex-end;
+      align-self: flex-end; /* Push to right side */
       border-bottom-right-radius: 0;
     }
 
     .ai-message {
       background-color: #e9ecef;
-      align-self: flex-start;
+      color: #000;
+      align-self: flex-start; /* Push to left side */
       border-bottom-left-radius: 0;
+    }
+
+    /* For any table HTML the AI might return (like “hire students”) */
+    .ai-message table {
+      width: 100%;
+      margin-top: 0.5rem;
+      border: 1px solid #ccc;
+      border-collapse: collapse;
+    }
+    .ai-message th, .ai-message td {
+      border: 1px solid #ccc;
+      padding: 0.5rem;
+      text-align: left;
+    }
+    .ai-message th {
+      background-color: #f1f1f1;
     }
 
     /* Footer / Input Section */
@@ -76,7 +93,7 @@
       background-color: #f8f9fa;
     }
 
-    /* Smaller screens adjustments */
+    /* Responsive adjustments */
     @media (max-width: 576px) {
       .chat-container {
         margin: 1rem;
@@ -90,15 +107,15 @@
 </head>
 
 <body>
-  <div class="chat-container d-flex flex-column">
+  <div class="chat-container">
     <!-- Header -->
     <div class="chat-header">
-      <h4 class="mb-0">Advanced Student Management Chat</h4>
+      <h4 class="mb-0">Super Student Management Chat</h4>
     </div>
 
     <!-- Chat Messages Container -->
     <div class="chat-body d-flex flex-column" id="messages">
-      <!-- Chat messages will be appended here dynamically -->
+      <!-- Chat messages will appear here dynamically -->
     </div>
 
     <!-- Footer: Input field + Send button -->
@@ -108,7 +125,7 @@
           type="text"
           id="userInput"
           class="form-control"
-          placeholder="Type your request, e.g. 'Add new student' or 'View students'..."
+          placeholder="E.g. 'Add a new student', 'Hire students', 'Check performance of John'..."
           onkeydown="handleKeyDown(event)"
         />
         <button class="btn btn-primary" onclick="sendPrompt()">Send</button>
@@ -116,7 +133,7 @@
     </div>
   </div>
 
-  <!-- Bootstrap 5 JS (optional if you need certain Bootstrap components) -->
+  <!-- Optional Bootstrap 5 JS if needed for components like modals -->
   <script
     src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"
   ></script>
@@ -125,43 +142,55 @@
     const messagesContainer = document.getElementById('messages');
     const userInputField = document.getElementById('userInput');
 
+    // Add a new message bubble to the chat
     function addMessage(text, sender) {
       const bubble = document.createElement('div');
       bubble.classList.add('chat-bubble', sender === 'user' ? 'user-message' : 'ai-message');
-      bubble.textContent = text;
+
+      // If the AI message contains HTML (e.g. a table for "hire students"),
+      // we render it as HTML. Otherwise, fallback to textContent.
+      if (sender === 'ai') {
+        bubble.innerHTML = text;
+      } else {
+        bubble.textContent = text;
+      }
+
       messagesContainer.appendChild(bubble);
 
-      // Auto-scroll to newest message
+      // Auto-scroll to the newest message
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
+    // Send prompt when user presses Enter
     function handleKeyDown(event) {
-      // If user presses Enter, send the prompt
       if (event.key === 'Enter') {
         sendPrompt();
       }
     }
 
+    // Send the user's message to the server
     async function sendPrompt() {
       const userInput = userInputField.value.trim();
       if (!userInput) return;
 
-      // Display user's message
+      // Show user's message in chat
       addMessage(userInput, 'user');
 
-      // Prepare POST request to /process_prompt
+      // Prepare POST request
       const requestOptions = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: userInput })
+        body: JSON.stringify({ prompt: userInput }),
       };
 
       try {
         const response = await fetch('/process_prompt', requestOptions);
         const data = await response.json();
 
-        // We display data.message if it exists, otherwise data.error or fallback text
-        addMessage(data.message || data.error || 'No response from AI.', 'ai');
+        // We'll display data.message if it exists, otherwise data.error or fallback
+        const reply = data.message || data.error || 'No response from AI.';
+        // Display as HTML if AI returned a table or any other markup
+        addMessage(reply, 'ai');
       } catch (error) {
         console.error('Error:', error);
         addMessage('Error: Unable to connect to server.', 'ai');
