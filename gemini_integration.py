@@ -38,8 +38,7 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-# If you do NOT have access to gemini-1.5-flash, switch to "models/chat-bison-001"
-model = genai.GenerativeModel("models/gemini-1.5-flash")
+model = genai.GenerativeModel("models/gemini-1.5-flash")  # or "models/chat-bison-001" if needed
 
 ###############################################################################
 # 4. Firebase Initialization (Base64 credentials)
@@ -113,10 +112,6 @@ def log_activity(action_type, details):
 # 6. Summaries
 ###############################################################################
 def generate_comedic_summary_of_past_activities():
-    """
-    Grabs last 100 logs from 'activity_log' and asks Gemini to produce
-    a short dark/funny summary.
-    """
     try:
         logs = db.collection('activity_log').order_by('timestamp').limit(100).stream()
         lines = []
@@ -162,10 +157,6 @@ def _safe_int(value):
 # 8. Firestore Logic
 ###############################################################################
 def delete_student_doc(doc_id):
-    """
-    Directly delete doc from Firestore by ID.
-    Returns (ok, message).
-    """
     ref = db.collection("students").document(doc_id)
     snap = ref.get()
     if not snap.exists:
@@ -177,6 +168,7 @@ def delete_student_doc(doc_id):
 # 9. Student Functions
 ###############################################################################
 def gen_student_id(name, age):
+    import random
     r= random.randint(1000,9999)
     part= (name[:4].upper() if len(name)>=4 else name.upper())
     a= str(age) if age else "00"
@@ -269,6 +261,7 @@ def classify_casual_or_firestore(prompt):
         return {"type":"casual"}
     raw= r.candidates[0].content.parts[0].text.strip()
     raw= remove_code_fences(raw)
+    import json
     try:
         d= json.loads(raw)
         if "type" not in d:
@@ -306,17 +299,13 @@ def interpret_delete_choice(user_input, candidates):
 # 12. Cleanup_data + build_students_table_html
 ###############################################################################
 def cleanup_data():
-    """
-    We'll read docs from Firestore, store doc.id in each record => doc["id"],
-    remove duplicates by name (lowest field count), remove doc that have no name or blank name
-    """
     all_docs= db.collection("students").stream()
     doc_map={}
     records=[]
     for d in all_docs:
         data= d.to_dict()
-        data["id"]= d.id  # real doc ID
-        doc_map[d.id]= d  # store reference if needed
+        data["id"]= d.id
+        doc_map[d.id]= d
         records.append(data)
 
     from collections import defaultdict
@@ -325,7 +314,6 @@ def cleanup_data():
     for st in records:
         nm= str(st.get("name") or "").strip().lower()
         if not nm:
-            # remove doc
             ref= doc_map[st["id"]]
             ref.reference.delete()
             removed_for_no_name.append(st["id"])
@@ -335,18 +323,17 @@ def cleanup_data():
     duplicates_removed=[]
     for nm, group in name_groups.items():
         if len(group)>1:
-            # find best doc
             best_score=-1
-            best_student=None
+            best_st=None
             for st in group:
-                score= sum(1 for v in st.values() if v not in [None,"",{}])
-                if score> best_score:
-                    best_score= score
-                    best_student= st
-            best_id= best_student["id"]
+                sc= sum(1 for v in st.values() if v not in [None,"",{}])
+                if sc> best_score:
+                    best_score= sc
+                    best_st= st
+            best_id= best_st["id"]
             for st in group:
                 if st["id"]!= best_id:
-                    doc_map[ st["id"] ].reference.delete()
+                    doc_map[st["id"]].reference.delete()
                     duplicates_removed.append(st["id"])
 
     if removed_for_no_name:
@@ -434,7 +421,6 @@ def handle_state_machine(user_prompt):
     pend= conversation_context["pending_params"]
     delete_candidates= conversation_context.get("delete_candidates",[])
 
-    # If we asked user which doc to delete
     if st== STATE_AWAITING_DELETE_CHOICE:
         chosen= interpret_delete_choice(user_prompt, delete_candidates)
         conversation_context["state"]= STATE_IDLE
@@ -448,7 +434,6 @@ def handle_state_machine(user_prompt):
         conf= comedic_confirmation("delete_student", doc_id=chosen)
         return conf
 
-    # Otherwise normal classification
     c= classify_casual_or_firestore(user_prompt)
     if c["type"]=="casual":
         r= model.generate_content(user_prompt)
@@ -458,11 +443,10 @@ def handle_state_machine(user_prompt):
             return "I'm out of words..."
 
     elif c["type"]=="firestore":
-        a= c["action"]
+        a= c.get("action","")
         p= c.get("parameters",{})
 
         if a=="delete_student":
-            # check if ID
             sid= p.get("id")
             if sid:
                 ok,msg= delete_student_doc(sid)
@@ -471,7 +455,6 @@ def handle_state_machine(user_prompt):
                 log_activity("DELETE_STUDENT", f"Deleted {sid} directly.")
                 cc= comedic_confirmation("delete_student", doc_id=sid)
                 return cc
-            # else we have a name?
             nm= p.get("name")
             if not nm:
                 return "We need an ID or name to delete."
@@ -526,7 +509,8 @@ def handle_add_student(p):
     out, st_code= add_student(p)
     if st_code==200 and "message" in out:
         # comedic
-        funny= create_funny_prompt_for_new_student(p["name"])
+        funny= f"Write a short witty statement acknowledging we have a new student '{p['name']}'. " \
+               f"Ask if they'd like to add details like marks or attendance. Under 40 words, humorous."
         r2= model.generate_content(funny)
         if r2.candidates:
             t= r2.candidates[0].content.parts[0].text.strip()
@@ -552,64 +536,11 @@ def handle_analytics(p):
     return out.get("message", out.get("error","Error."))
 
 ###############################################################################
-# 15. Additional Routes
-###############################################################################
-@app.route("/delete_by_id", methods=["POST"])
-def delete_by_id():
-    data= request.json
-    sid= data.get("id")
-    if not sid:
-        return jsonify({"error":"No ID"}),400
-    ok,msg= delete_student_doc(sid)
-    if not ok:
-        return jsonify({"error":msg}),404
-    log_activity("DELETE_STUDENT", f"Deleted {sid} via trash icon.")
-    conf= comedic_confirmation("delete_student", doc_id=sid)
-    return jsonify({"success":True,"message":conf}),200
-
-@app.route("/bulk_update_students", methods=["POST"])
-def bulk_update_students_route():
-    data= request.json
-    ups= data.get("updates",[])
-    if not ups:
-        return jsonify({"error":"No updates provided."}),400
-    updated= bulk_update_students(ups)
-    return jsonify({"success":True,"updated_ids":updated}),200
-
-@app.route("/process_prompt", methods=["POST"])
-def process_prompt():
-    global conversation_memory, conversation_context
-    req= request.json
-    user_prompt= req.get("prompt","").strip()
-    if not user_prompt:
-        return jsonify({"error":"No prompt."}),400
-
-    conversation_memory.append({"role":"user","content": user_prompt})
-    if len(conversation_memory)>MAX_MEMORY:
-        conversation_memory= conversation_memory[-MAX_MEMORY:]
-
-    # reset
-    if user_prompt.lower() in ["reset memory","reset conversation","cancel"]:
-        conversation_memory.clear()
-        conversation_context["state"]= STATE_IDLE
-        conversation_context["pending_params"]={}
-        conversation_context["last_intended_action"]=None
-        conversation_context["delete_candidates"]=[]
-        save_memory_to_firestore()
-        return jsonify({"message":"Memory & context reset."}),200
-
-    reply= handle_state_machine(user_prompt)
-    conversation_memory.append({"role":"AI","content": reply})
-    save_memory_to_firestore()
-    return jsonify({"message":reply}),200
-
-###############################################################################
-# 16. The main HTML route with dark mode, intro screen, etc.
+# 15. The main HTML route
 ###############################################################################
 @app.route("/")
 def index():
     global welcome_summary
-    # We'll embed the comedic summary in the f-string as "safe_sum"
     safe_sum= welcome_summary.replace('"','\\"').replace('\n','\\n')
 
     return f"""
@@ -622,6 +553,7 @@ def index():
   <link rel="stylesheet" 
     href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"/>
   <style>
+    /* Similar CSS as before for dark mode, intro screen, etc. */
     body {{
       margin:0; padding:0; background:#f8f9fa;
       transition: background 0.3s, color 0.3s;
@@ -643,7 +575,7 @@ def index():
     .chat-wrap {{
       max-width:700px; margin:2rem auto; background:#fff; 
       border-radius:0.5rem; box-shadow:0 4px 10px rgba(0,0,0,0.1);
-      display:none; /* hidden until intro is closed */
+      display:none; 
       flex-direction:column; height:80vh; overflow:hidden;
       transition: transform 0.5s ease, background 0.3s, color 0.3s;
     }}
@@ -726,7 +658,6 @@ def index():
   </style>
 </head>
 <body>
-  <!-- Intro screen with comedic summary -->
   <div id="introScreen">
     <h1 style="font-size:1.5rem; max-width:600px; color:#fff;">
       “{safe_sum}”
@@ -734,7 +665,6 @@ def index():
     <button class="btn btn-light" onclick="hideIntro()">Continue</button>
   </div>
 
-  <!-- Background music with random track from an array of URLs -->
   <audio id="bgMusic" autoplay loop></audio>
 
   <div class="chat-wrap" id="chatSection">
@@ -756,23 +686,19 @@ def index():
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
-    // Intro screen
     function hideIntro() {{
       const intro = document.getElementById('introScreen');
       intro.classList.add('hidden');
       setTimeout(() => {{
         intro.style.display='none';
-        // Now show chat
         document.getElementById('chatSection').style.display='';
       }}, 500);
     }}
 
-    // Dark mode toggle
     function toggleDarkMode() {{
       document.body.classList.toggle('dark-mode');
     }}
 
-    // Random music
     const musicTracks = [
       "https://www.bensound.com/bensound-music/bensound-anewbeginning.mp3",
       "https://www.bensound.com/bensound-music/bensound-ukulele.mp3",
@@ -781,7 +707,6 @@ def index():
 
     window.addEventListener('DOMContentLoaded', () => {{
       const chatSection = document.getElementById('chatSection');
-      // By default, hide chat until intro is done
       chatSection.style.display='none';
 
       const bgMusic = document.getElementById('bgMusic');
@@ -794,15 +719,15 @@ def index():
     const tablePanel= document.getElementById('tablePanel');
 
     function addBubble(text, isUser=false) {{
-      const bubble = document.createElement('div');
+      const bubble= document.createElement('div');
       bubble.classList.add('chat-bubble', isUser ? 'user-msg' : 'ai-msg');
       bubble.innerHTML = text;
       chatBody.appendChild(bubble);
-      chatBody.scrollTop = chatBody.scrollHeight;
+      chatBody.scrollTop= chatBody.scrollHeight;
     }}
 
     async function sendPrompt() {{
-      const prompt = userInput.value.trim();
+      const prompt= userInput.value.trim();
       if(!prompt) return;
       addBubble(prompt,true);
       userInput.value='';
@@ -814,8 +739,7 @@ def index():
           body: JSON.stringify({{prompt}})
         }});
         const data= await resp.json();
-        const reply= data.message || data.error || 'No response.';
-        parseReply(reply);
+        parseReply(data.message || data.error || 'No response.');
       }} catch(err) {{
         addBubble("Error connecting: "+err,false);
       }}
@@ -835,7 +759,6 @@ def index():
     function addDeleteIcons() {{
       const table = tablePanel.querySelector('table');
       if(!table) return;
-      // add col
       const headRow = table.querySelector('thead tr');
       if(headRow && !headRow.querySelector('.action-col')) {{
         const th = document.createElement('th');
@@ -867,7 +790,6 @@ def index():
         const data= await resp.json();
         if(data.success) {{
           addBubble(data.message,false);
-          // re-view students:
           const vresp= await fetch('/process_prompt',{{
             method:'POST',
             headers:{{'Content-Type':'application/json'}},
@@ -900,7 +822,7 @@ def index():
         let guardianPhone= cells[7].innerText.trim();
         let attendance= cells[8].innerText.trim();
         let grades= cells[9].innerText.trim();
-        try {{ grades= JSON.parse(grades); }} catch(e) {{}}
+        try {{ grades= JSON.parse(grades); }} catch(e){{}}
         updates.push({{
           id:sid,
           name,
@@ -939,69 +861,7 @@ def index():
 """
 
 ###############################################################################
-# 17. Run
-###############################################################################
-@app.route("/delete_by_id", methods=["POST"])
-def delete_by_id():
-    data= request.json
-    sid= data.get("id")
-    if not sid:
-        return jsonify({"error":"No ID"}),400
-    ok,msg= delete_student_doc(sid)
-    if not ok:
-        return jsonify({"error":msg}),404
-    log_activity("DELETE_STUDENT", f"Deleted {sid} via trash icon.")
-    conf= comedic_confirmation("delete_student", doc_id=sid)
-    return jsonify({"success":True,"message":conf}),200
-
-@app.route("/bulk_update_students", methods=["POST"])
-def bulk_update_students_route():
-    data= request.json
-    ups= data.get("updates",[])
-    if not ups:
-        return jsonify({"error":"No updates provided."}),400
-    updated= bulk_update_students(ups)
-    return jsonify({"success":True,"updated_ids":updated}),200
-
-###############################################################################
-# 18. The main conversation route
-###############################################################################
-@app.route("/process_prompt", methods=["POST"])
-def process_prompt():
-    global conversation_memory, conversation_context
-    req= request.json
-    user_prompt= req.get("prompt","").strip()
-    if not user_prompt:
-        return jsonify({"error":"No prompt."}),400
-
-    conversation_memory.append({"role":"user","content": user_prompt})
-    if len(conversation_memory)>MAX_MEMORY:
-        conversation_memory= conversation_memory[-MAX_MEMORY:]
-
-    if user_prompt.lower() in ["reset memory","reset conversation","cancel"]:
-        conversation_memory.clear()
-        conversation_context["state"]= STATE_IDLE
-        conversation_context["pending_params"]={}
-        conversation_context["last_intended_action"]=None
-        conversation_context["delete_candidates"]=[]
-        save_memory_to_firestore()
-        return jsonify({"message":"Memory & context reset."}),200
-
-    reply= handle_state_machine(user_prompt)
-    conversation_memory.append({"role":"AI","content": reply})
-    save_memory_to_firestore()
-    return jsonify({"message":reply}),200
-
-###############################################################################
-# 19. Global Error Handler
-###############################################################################
-@app.errorhandler(Exception)
-def handle_exc(e):
-    logging.error(f"Uncaught Exception: {e}")
-    return jsonify({"error":"An internal error occurred."}),500
-
-###############################################################################
-# 20. On Startup => Load Memory, Summaries
+# 21. Startup + Run
 ###############################################################################
 @app.before_first_request
 def load_on_start():
@@ -1011,26 +871,20 @@ def load_on_start():
         conversation_memory.extend(mem)
     if ctx:
         conversation_context.update(ctx)
-
     summary= generate_comedic_summary_of_past_activities()
     welcome_summary= summary
     conversation_memory.append({"role":"system","content":"PAST_ACTIVITIES_SUMMARY: "+ summary})
     save_memory_to_firestore()
     logging.info("Startup summary: "+ summary)
 
-###############################################################################
-# 21. Actually run
-###############################################################################
 if __name__=="__main__":
     mem,ctx= load_memory_from_firestore()
     if mem:
         conversation_memory.extend(mem)
     if ctx:
         conversation_context.update(ctx)
-
     summary= generate_comedic_summary_of_past_activities()
     welcome_summary= summary
     conversation_memory.append({"role":"system","content":"PAST_ACTIVITIES_SUMMARY: "+ summary})
     save_memory_to_firestore()
-
     app.run(debug=True, port=8000)
