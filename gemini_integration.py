@@ -281,9 +281,6 @@ def classify_casual_or_firestore(prompt):
 # 11. Searching & Deletion
 ###############################################################################
 def search_students_by_name(name):
-    """
-    Return a list of docs matching the name. Each doc includes doc["id"] = real Firestore doc ID.
-    """
     docs= db.collection("students").where("name","==", name).stream()
     results=[]
     for d in docs:
@@ -293,11 +290,6 @@ def search_students_by_name(name):
     return results
 
 def interpret_delete_choice(user_input, candidates):
-    """
-    user might say "first" => candidates[0]["id"]
-    "second" => candidates[1]["id"]
-    or an actual ID
-    """
     txt= user_input.strip().lower()
     if txt in ["first","1","one"]:
         if len(candidates)>0:
@@ -305,9 +297,8 @@ def interpret_delete_choice(user_input, candidates):
     elif txt in ["second","2","two"]:
         if len(candidates)>1:
             return candidates[1]["id"]
-    # or check if it matches an ID
     for c in candidates:
-        if txt== c["id"].lower() or txt== c["id"]:
+        if txt== c["id"] or txt== c["id"].lower():
             return c["id"]
     return None
 
@@ -355,7 +346,6 @@ def cleanup_data():
             best_id= best_student["id"]
             for st in group:
                 if st["id"]!= best_id:
-                    # remove
                     doc_map[ st["id"] ].reference.delete()
                     duplicates_removed.append(st["id"])
 
@@ -365,7 +355,6 @@ def cleanup_data():
         log_activity("CLEANUP_DATA", f"Removed duplicates => {duplicates_removed}")
 
     return build_students_table_html("Data cleaned! Updated student records below:")
-
 
 def build_students_table_html(heading="Student Records"):
     all_docs= db.collection("students").stream()
@@ -440,36 +429,12 @@ def build_students_table_html(heading="Student Records"):
 ###############################################################################
 # 13. State Handling
 ###############################################################################
-def interpret_delete_choice(user_input, candidates):
-    txt= user_input.strip().lower()
-    if txt in ["first","1","one"]:
-        if len(candidates)>0:
-            return candidates[0]["id"]
-    elif txt in ["second","2","two"]:
-        if len(candidates)>1:
-            return candidates[1]["id"]
-    for c in candidates:
-        if txt== c["id"] or txt== c["id"].lower():
-            return c["id"]
-    return None
-
-def search_students_by_name(name):
-    docs= db.collection("students").where("name","==", name).stream()
-    results=[]
-    for d in docs:
-        st= d.to_dict()
-        st["id"]= d.id
-        results.append(st)
-    return results
-
-###############################################################################
-# 14. State Machine
-###############################################################################
 def handle_state_machine(user_prompt):
     st= conversation_context["state"]
     pend= conversation_context["pending_params"]
     delete_candidates= conversation_context.get("delete_candidates",[])
 
+    # If we asked user which doc to delete
     if st== STATE_AWAITING_DELETE_CHOICE:
         chosen= interpret_delete_choice(user_prompt, delete_candidates)
         conversation_context["state"]= STATE_IDLE
@@ -479,15 +444,13 @@ def handle_state_machine(user_prompt):
         ok,msg= delete_student_doc(chosen)
         if not ok:
             return msg
-        # success
         log_activity("DELETE_STUDENT", f"Deleted {chosen} after choice.")
         conf= comedic_confirmation("delete_student", doc_id=chosen)
         return conf
 
-    # normal logic
+    # Otherwise normal classification
     c= classify_casual_or_firestore(user_prompt)
     if c["type"]=="casual":
-        # just chat
         r= model.generate_content(user_prompt)
         if r.candidates:
             return r.candidates[0].content.parts[0].text.strip()
@@ -512,7 +475,6 @@ def handle_state_machine(user_prompt):
             nm= p.get("name")
             if not nm:
                 return "We need an ID or name to delete."
-            # search
             matches= search_students_by_name(nm)
             if not matches:
                 return f"No student named {nm} found."
@@ -525,10 +487,8 @@ def handle_state_machine(user_prompt):
                 conf= comedic_confirmation("delete_student", doc_id=found_id)
                 return conf
             else:
-                # multiple => store in context
                 conversation_context["state"]= STATE_AWAITING_DELETE_CHOICE
                 conversation_context["delete_candidates"]= matches
-                # show them
                 lines=[]
                 for i,m in enumerate(matches):
                     lines.append(f"{i+1}. ID={m['id']} (class={m.get('class','')}, age={m.get('age','')})")
@@ -592,7 +552,7 @@ def handle_analytics(p):
     return out.get("message", out.get("error","Error."))
 
 ###############################################################################
-# 14. Additional Routes
+# 15. Additional Routes
 ###############################################################################
 @app.route("/delete_by_id", methods=["POST"])
 def delete_by_id():
@@ -610,11 +570,11 @@ def delete_by_id():
 @app.route("/bulk_update_students", methods=["POST"])
 def bulk_update_students_route():
     data= request.json
-    updates= data.get("updates",[])
-    if not updates:
+    ups= data.get("updates",[])
+    if not ups:
         return jsonify({"error":"No updates provided."}),400
-    updated= bulk_update_students(updates)
-    return jsonify({"success":True, "updated_ids":updated}),200
+    updated= bulk_update_students(ups)
+    return jsonify({"success":True,"updated_ids":updated}),200
 
 @app.route("/process_prompt", methods=["POST"])
 def process_prompt():
@@ -622,13 +582,13 @@ def process_prompt():
     req= request.json
     user_prompt= req.get("prompt","").strip()
     if not user_prompt:
-        return jsonify({"error":"No prompt"}),400
+        return jsonify({"error":"No prompt."}),400
 
     conversation_memory.append({"role":"user","content": user_prompt})
     if len(conversation_memory)>MAX_MEMORY:
         conversation_memory= conversation_memory[-MAX_MEMORY:]
 
-    # check resets
+    # reset
     if user_prompt.lower() in ["reset memory","reset conversation","cancel"]:
         conversation_memory.clear()
         conversation_context["state"]= STATE_IDLE
@@ -644,12 +604,12 @@ def process_prompt():
     return jsonify({"message":reply}),200
 
 ###############################################################################
-# 15. The main HTML route with dark mode, intro screen, etc.
+# 16. The main HTML route with dark mode, intro screen, etc.
 ###############################################################################
 @app.route("/")
 def index():
     global welcome_summary
-    # We embed the comedic summary in the f-string as "safe_sum"
+    # We'll embed the comedic summary in the f-string as "safe_sum"
     safe_sum= welcome_summary.replace('"','\\"').replace('\n','\\n')
 
     return f"""
@@ -797,20 +757,20 @@ def index():
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     // Intro screen
-    function hideIntro() {
+    function hideIntro() {{
       const intro = document.getElementById('introScreen');
       intro.classList.add('hidden');
-      setTimeout(() => {
+      setTimeout(() => {{
         intro.style.display='none';
         // Now show chat
         document.getElementById('chatSection').style.display='';
-      }, 500);
-    }
+      }}, 500);
+    }}
 
     // Dark mode toggle
-    function toggleDarkMode() {
+    function toggleDarkMode() {{
       document.body.classList.toggle('dark-mode');
-    }
+    }}
 
     // Random music
     const musicTracks = [
@@ -819,7 +779,7 @@ def index():
       "https://www.bensound.com/bensound-music/bensound-funnysong.mp3"
     ];
 
-    window.addEventListener('DOMContentLoaded', () => {
+    window.addEventListener('DOMContentLoaded', () => {{
       const chatSection = document.getElementById('chatSection');
       // By default, hide chat until intro is done
       chatSection.style.display='none';
@@ -827,106 +787,106 @@ def index():
       const bgMusic = document.getElementById('bgMusic');
       const randomUrl = musicTracks[Math.floor(Math.random() * musicTracks.length)];
       bgMusic.src = randomUrl;
-    });
+    }});
 
     const chatBody = document.getElementById('chatBody');
     const userInput = document.getElementById('userInput');
     const tablePanel= document.getElementById('tablePanel');
 
-    function addBubble(text, isUser=false) {
+    function addBubble(text, isUser=false) {{
       const bubble = document.createElement('div');
       bubble.classList.add('chat-bubble', isUser ? 'user-msg' : 'ai-msg');
       bubble.innerHTML = text;
       chatBody.appendChild(bubble);
       chatBody.scrollTop = chatBody.scrollHeight;
-    }
+    }}
 
-    async function sendPrompt() {
+    async function sendPrompt() {{
       const prompt = userInput.value.trim();
       if(!prompt) return;
       addBubble(prompt,true);
       userInput.value='';
 
-      try {
-        const resp= await fetch('/process_prompt',{
+      try {{
+        const resp= await fetch('/process_prompt',{{
           method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({prompt})
-        });
+          headers:{{'Content-Type':'application/json'}},
+          body: JSON.stringify({{prompt}})
+        }});
         const data= await resp.json();
         const reply= data.message || data.error || 'No response.';
         parseReply(reply);
-      } catch(err) {
+      }} catch(err) {{
         addBubble("Error connecting: "+err,false);
-      }
-    }
+      }}
+    }}
 
-    function parseReply(reply) {
-      if(reply.includes('<table') || reply.includes('slideFromRight')) {
+    function parseReply(reply) {{
+      if(reply.includes('<table') || reply.includes('slideFromRight')) {{
         tablePanel.innerHTML= reply;
         addDeleteIcons();
         tablePanel.classList.add('show');
         document.getElementById('chatSection').classList.add('slideLeft');
-      } else {
+      }} else {{
         addBubble(reply,false);
-      }
-    }
+      }}
+    }}
 
-    function addDeleteIcons() {
+    function addDeleteIcons() {{
       const table = tablePanel.querySelector('table');
       if(!table) return;
       // add col
       const headRow = table.querySelector('thead tr');
-      if(headRow && !headRow.querySelector('.action-col')) {
+      if(headRow && !headRow.querySelector('.action-col')) {{
         const th = document.createElement('th');
         th.textContent='Action';
         th.classList.add('action-col');
         headRow.appendChild(th);
-      }
+      }}
       const tbody = table.querySelector('tbody');
       if(!tbody) return;
-      tbody.querySelectorAll('tr').forEach(tr => {
+      tbody.querySelectorAll('tr').forEach(tr => {{
         let cells = tr.querySelectorAll('td');
-        if(cells.length>0) {
+        if(cells.length>0) {{
           const sid= cells[0].innerText.trim();
           const td = document.createElement('td');
           td.classList.add('action-col');
-          td.innerHTML= `<button style="border:none; background:transparent; color:red;" onclick="deleteRow('${sid}')">🗑️</button>`;
+          td.innerHTML= `<button style="border:none; background:transparent; color:red;" onclick="deleteRow('${{sid}}')">🗑️</button>`;
           tr.appendChild(td);
-        }
-      });
-    }
+        }}
+      }});
+    }}
 
-    async function deleteRow(sid) {
-      try {
-        const resp= await fetch('/delete_by_id',{
+    async function deleteRow(sid) {{
+      try {{
+        const resp= await fetch('/delete_by_id',{{
           method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({id:sid})
-        });
+          headers:{{'Content-Type':'application/json'}},
+          body: JSON.stringify({{id:sid}})
+        }});
         const data= await resp.json();
-        if(data.success) {
+        if(data.success) {{
           addBubble(data.message,false);
           // re-view students:
-          const vresp= await fetch('/process_prompt',{
+          const vresp= await fetch('/process_prompt',{{
             method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({prompt:'view students'})
-          });
+            headers:{{'Content-Type':'application/json'}},
+            body: JSON.stringify({{prompt:'view students'}})
+          }});
           const vdata= await vresp.json();
           parseReply(vdata.message);
-        } else {
+        }} else {{
           addBubble("Delete error: "+(data.error||data.message),false);
-        }
-      } catch(err) {
+        }}
+      }} catch(err) {{
         addBubble("Delete error: "+err,false);
-      }
-    }
+      }}
+    }}
 
-    async function saveTableEdits() {
+    async function saveTableEdits() {{
       const rows= tablePanel.querySelectorAll('table tbody tr');
       const updates= [];
-      rows.forEach(r => {
+      rows.forEach(r => {{
         const cells= r.querySelectorAll('td');
         if(!cells.length) return;
         const sid= cells[0].innerText.trim();
@@ -953,33 +913,33 @@ def index():
           attendance,
           grades
         }});
-      });
+      }});
 
-      try {
-        const resp= await fetch('/bulk_update_students',{
+      try {{
+        const resp= await fetch('/bulk_update_students',{{
           method:'POST',
           headers:{{'Content-Type':'application/json'}},
-          body: JSON.stringify({updates})
-        });
+          body: JSON.stringify({{updates}})
+        }});
         const data= await resp.json();
-        if(data.success) {
+        if(data.success) {{
           addBubble("Changes saved to Firebase!",false);
-        } else {
+        }} else {{
           addBubble("Error saving changes: "+(data.error||data.message),false);
-        }
-      } catch(err) {
+        }}
+      }} catch(err) {{
         addBubble("Error saving changes: "+err,false);
-      }
+      }}
       tablePanel.classList.remove('show');
       document.getElementById('chatSection').classList.remove('slideLeft');
-    }
+    }}
   </script>
 </body>
 </html>
 """
 
 ###############################################################################
-# 16. Delete Icon Route
+# 17. Run
 ###############################################################################
 @app.route("/delete_by_id", methods=["POST"])
 def delete_by_id():
@@ -994,9 +954,6 @@ def delete_by_id():
     conf= comedic_confirmation("delete_student", doc_id=sid)
     return jsonify({"success":True,"message":conf}),200
 
-###############################################################################
-# 17. Bulk Update
-###############################################################################
 @app.route("/bulk_update_students", methods=["POST"])
 def bulk_update_students_route():
     data= request.json
@@ -1021,7 +978,6 @@ def process_prompt():
     if len(conversation_memory)>MAX_MEMORY:
         conversation_memory= conversation_memory[-MAX_MEMORY:]
 
-    # reset
     if user_prompt.lower() in ["reset memory","reset conversation","cancel"]:
         conversation_memory.clear()
         conversation_context["state"]= STATE_IDLE
@@ -1063,7 +1019,7 @@ def load_on_start():
     logging.info("Startup summary: "+ summary)
 
 ###############################################################################
-# 21. Run
+# 21. Actually run
 ###############################################################################
 if __name__=="__main__":
     mem,ctx= load_memory_from_firestore()
