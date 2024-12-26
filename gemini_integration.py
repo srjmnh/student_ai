@@ -8,8 +8,9 @@ from flask import Flask, request, jsonify, render_template
 # Google Generative AI
 import google.generativeai as genai
 
-# Firebase Setup (base64 credentials)
-from firebase_setup import get_firestore_client
+# Firebase Admin SDK
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 ###############################################################################
 # 1. Flask Setup
@@ -31,29 +32,57 @@ logging.basicConfig(
 ###############################################################################
 # 3. Configure Gemini (Google Generative AI)
 ###############################################################################
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # For best practice, store in env var
+# For best practice, store your Gemini API key in an env variable
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     logging.error("GEMINI_API_KEY environment variable not set.")
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 
 genai.configure(api_key=GEMINI_API_KEY)
+# You can switch models here if needed (e.g., "models/chat-bison-001")
 model = genai.GenerativeModel("models/gemini-1.5-flash")
 
 ###############################################################################
-# 4. Initialize Firestore (via firebase_setup.py)
+# 4. Firebase Initialization
 ###############################################################################
-try:
-    db = get_firestore_client()
-    logging.info("✅ Firestore Client Initialized via firebase_setup.get_firestore_client()")
-except Exception as e:
-    logging.error(f"❌ Firestore client initialization error: {e}")
-    raise e
+# Option A: If FIREBASE_CREDENTIALS is actually a file path
+# firebase_credentials_path = os.getenv('FIREBASE_CREDENTIALS')
+# if not firebase_credentials_path:
+#     raise EnvironmentError("FIREBASE_CREDENTIALS env variable not set.")
+
+# if not os.path.exists(firebase_credentials_path):
+#     raise FileNotFoundError(f"Firebase credentials file '{firebase_credentials_path}' not found.")
+
+# cred = credentials.Certificate(firebase_credentials_path)
+# firebase_admin.initialize_app(cred, name='student_management_app')
+# db = firestore.client(app=firebase_admin.get_app('student_management_app'))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Option B: If FIREBASE_CREDENTIALS is a *Base64-encoded* JSON (common in CI/CD)
+# Comment out the above approach if you're using base64 credentials:
+import base64
+
+if 'student_management_app' not in firebase_admin._apps:
+    encoded_json = os.getenv("FIREBASE_CREDENTIALS")
+    if not encoded_json:
+        raise EnvironmentError("FIREBASE_CREDENTIALS not set or empty.")
+    try:
+        decoded_json = base64.b64decode(encoded_json).decode('utf-8')
+        service_account_info = json.loads(decoded_json)
+        cred = credentials.Certificate(service_account_info)
+        firebase_admin.initialize_app(cred, name='student_management_app')
+    except Exception as e:
+        raise Exception(f"Error initializing Firebase: {e}")
+
+db = firestore.client(app=firebase_admin.get_app('student_management_app'))
+
+logging.info("✅ Firebase and Firestore initialized successfully.")
 
 ###############################################################################
 # 5. Conversation Memory & Activity Log
 ###############################################################################
 conversation_memory = []
-MAX_MEMORY = 20  # Adjust as needed
+MAX_MEMORY = 20
 welcome_summary = ""
 
 def save_memory_to_firestore():
@@ -82,7 +111,7 @@ def log_activity(action_type, details):
         db.collection('activity_log').add({
             "action_type": action_type,
             "details": details,
-            "timestamp": None  # or use firestore.SERVER_TIMESTAMP if needed
+            "timestamp": firestore.SERVER_TIMESTAMP  # use SERVER_TIMESTAMP
         })
         logging.info(f"✅ Logged activity: {action_type}, details={details}")
     except Exception as e:
@@ -90,8 +119,7 @@ def log_activity(action_type, details):
 
 def generate_comedic_summary_of_past_activities():
     """
-    Reads all logs from the 'activity_log' collection, then asks Gemini to produce
-    a short dark/funny summary of them.
+    Reads logs from 'activity_log', and asks Gemini to produce a dark/funny summary.
     """
     try:
         logs = db.collection('activity_log').order_by('timestamp').limit(100).stream()
@@ -162,6 +190,7 @@ def create_comedic_confirmation(action, name, student_id):
 
     resp = model.generate_content(prompt)
     if resp.candidates:
+        # Truncate to 100 chars if it's too long
         return truncate_response(resp.candidates[0].content.parts[0].text.strip(), max_length=100)
     else:
         return "Action completed with a hint of darkness."
@@ -170,8 +199,8 @@ def extract_fields(user_input, desired_fields):
     fields_str = ", ".join(desired_fields)
     prompt = (
         f"You are an assistant tasked with extracting specific fields from user input. "
-        f"Extract the values for the following fields from the user's sentence: {fields_str}.\n"
-        f"Return only a JSON object with the fields provided and their corresponding values.\n"
+        f"Extract the values for the following fields: {fields_str}.\n"
+        f"Return only a JSON object with those fields and their values.\n"
         f"If a field is not present, omit it.\n\n"
         f"**User Input:** '{user_input}'\n\n"
         f"**JSON Output Only:**"
@@ -186,7 +215,7 @@ def extract_fields(user_input, desired_fields):
             logging.debug(f"Extracted fields: {extracted}")
             return extracted
         except json.JSONDecodeError:
-            logging.error(f"Gemini returned invalid JSON: {content}")
+            logging.error(f"Gemini returned invalid JSON for extraction: {content}")
             return {}
     return {}
 
@@ -302,46 +331,66 @@ def index():
 
 def classify_user_input(user_prompt):
     classification_prompt = (
-        "You are an intelligent assistant trained to classify user inputs into two categories: "
-        "casual conversations and Firestore database actions.\n\n"
+        "You are an intelligent assistant trained to classify user inputs into two distinct categories: "
+        "casual conversations and Firestore database actions. "
+        "Respond with valid JSON only, no extra text.\n\n"
         "**Categories:**\n"
         "1. **Casual Conversation**\n"
-        "   - JSON: {\"type\": \"casual\"}\n"
+        "   - {\"type\": \"casual\"}\n\n"
         "2. **Firestore Action**\n"
-        "   - JSON: {\"type\": \"firestore\", \"action\": \"...\", \"parameters\": {...}}\n\n"
-        "**Guidelines:**\n"
-        "- If the user's input involves add, update, delete, or view of student data, return type=\"firestore\".\n"
-        "- Else, return type=\"casual\".\n\n"
+        "   - Must be one of: add_student, update_student, delete_student, view_students\n"
+        "   - Example: {\"type\": \"firestore\", \"action\": \"add_student\", \"parameters\": {...}}\n\n"
+        "Guidelines:\n"
+        "- If user is adding/updating/deleting/viewing students, set type=firestore.\n"
+        "- The action must be exactly one of: add_student, update_student, delete_student, view_students.\n\n"
         f"**User Input:** '{user_prompt}'\n\n"
-        "**Output:** (valid JSON only!)"
+        "**Output:** (valid JSON only)"
     )
+
     response = model.generate_content(classification_prompt)
     if response.candidates:
         content = ''.join(part.text for part in response.candidates[0].content.parts).strip()
         content = remove_code_fences(content)
         logging.debug(f"Gemini classification response: {content}")
+
         try:
             action_data = json.loads(content)
+
+            # Ensure there's a "type" field
             if "type" not in action_data:
-                raise ValueError("Missing 'type' in classification.")
+                raise ValueError("Missing 'type' in classification JSON.")
+
             if action_data["type"] == "firestore":
                 if "action" not in action_data or "parameters" not in action_data:
-                    raise ValueError("Missing 'action' or 'parameters' in Firestore classification.")
+                    raise ValueError("Missing 'action' or 'parameters' in Firestore JSON.")
+
+                # ─────────────────────────────────────────────────────
+                # 1) Normalize short or incorrect action names
+                #    If the model returns "add", "update", "delete", "view", map them:
+                short_actions_map = {
+                    "add": "add_student",
+                    "update": "update_student",
+                    "delete": "delete_student",
+                    "view": "view_students",
+                }
+                raw_action = action_data["action"].lower().strip()
+                if raw_action in short_actions_map:
+                    action_data["action"] = short_actions_map[raw_action]
+
+                # or if the model is slightly off (like "Add_Student" with a capital "A"),
+                # you could do some more checks or forcibly set it to one of the known strings.
+                recognized_actions = {"add_student", "update_student", "delete_student", "view_students"}
+                if action_data["action"] not in recognized_actions:
+                    raise ValueError(f"Unknown Firestore action: {action_data['action']}")
+
             return action_data
+
         except (json.JSONDecodeError, ValueError) as e:
-            logging.error(f"Invalid classification JSON: {content}. Error: {e}")
-            clarification_prompt = (
-                "I'm sorry, but I couldn't understand your request. Could you clarify your intent? "
-                "For database operations, specify 'add/update/delete/view student.'"
-            )
-            clarification_response = model.generate_content(clarification_prompt)
-            if clarification_response.candidates:
-                clarification_message = clarification_response.candidates[0].content.parts[0].text.strip()
-            else:
-                clarification_message = "Could you please clarify?"
-            return {"type": "clarification", "message": clarification_message}
+            logging.error(f"Invalid classification JSON or missing fields: {content}. Error: {e}")
+            # Return a clarification prompt:
+            return {"type": "clarification", "message": "Could you clarify your request? Try add_student, update_student, delete_student, or view_students."}
     else:
-        logging.error("No response from Gemini.")
+        logging.error("No response from Gemini for classification.")
         return {"type": "casual"}
 
 def truncate_response(response_text, max_length=100):
@@ -357,15 +406,14 @@ def process_prompt():
         logging.debug(f"Received prompt: {user_prompt}")
 
         if not user_prompt:
-            logging.warning("No prompt provided.")
             return jsonify({"error": "No prompt provided."}), 400
 
-        # Add user input to memory
+        # Append user input to memory
         conversation_memory.append({"role": "user", "content": user_prompt})
         if len(conversation_memory) > MAX_MEMORY:
             conversation_memory = conversation_memory[-MAX_MEMORY:]
 
-        # Handle reset memory
+        # If user says "reset memory"
         if user_prompt.lower() == "reset memory":
             conversation_memory.clear()
             save_memory_to_firestore()
@@ -375,6 +423,7 @@ def process_prompt():
         action_data = classify_user_input(user_prompt)
         logging.debug(f"Classification result: {action_data}")
 
+        # CASE 1: CASUAL
         if action_data.get("type") == "casual":
             casual_resp = model.generate_content(user_prompt)
             if casual_resp.candidates:
@@ -387,13 +436,16 @@ def process_prompt():
             save_memory_to_firestore()
             return jsonify({"message": reply}), 200
 
+        # CASE 2: FIRESTORE
         elif action_data.get("type") == "firestore":
             action = action_data.get("action")
             params = action_data.get("parameters", {})
-            logging.debug(f"Firestore action: {action} with params {params}")
+            logging.debug(f"Firestore action: {action}, params: {params}")
 
             if action == "add_student":
-                desired_fields = ["name", "age", "class", "address", "phone", "guardian_name", "guardian_phone", "attendance", "grades"]
+                # Possibly extract more fields from the user prompt
+                desired_fields = ["name", "age", "class", "address", "phone", 
+                                  "guardian_name", "guardian_phone", "attendance", "grades"]
                 extracted_fields = extract_fields(user_prompt, desired_fields)
                 student_params = {**params, **extracted_fields}
                 result, status = add_student(student_params)
@@ -415,6 +467,7 @@ def process_prompt():
 
             elif action == "view_students":
                 output, status = view_students()
+                # Optionally store the list of students in memory if you want.
                 conversation_memory.append({"role": "AI", "content": "Here's the list of students:"})
                 conversation_memory.append({"role": "AI", "content": json.dumps(output.get("students", []), indent=2)})
                 save_memory_to_firestore()
@@ -424,22 +477,24 @@ def process_prompt():
                 logging.warning(f"Unknown Firestore action: {action}")
                 return jsonify({"error": f"Unknown Firestore action: {action}"}), 400
 
+        # CASE 3: CLARIFICATION
         elif action_data.get("type") == "clarification":
-            clarification_message = action_data.get("message", "Could you please clarify your request?")
+            clarification_message = action_data.get("message", "Could you clarify your request?")
             conversation_memory.append({"role": "AI", "content": clarification_message})
             save_memory_to_firestore()
             return jsonify({"message": clarification_message}), 200
 
+        # CASE 4: Anything else
         else:
-            logging.warning("Could not classify input. 'type' is missing or invalid.")
-            return jsonify({"error": "Could not classify input. 'type' is missing or invalid."}), 400
+            logging.warning(f"Could not classify input. {action_data}")
+            return jsonify({"error": "Could not classify input."}), 400
 
     except Exception as e:
         logging.error(f"❌ An error occurred in /process_prompt: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
 
 ###############################################################################
-# 9. Global Error Handler to Return JSON
+# 9. Global Error Handler for JSON
 ###############################################################################
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -447,7 +502,7 @@ def handle_exception(e):
     return jsonify({"error": "An internal error occurred."}), 500
 
 ###############################################################################
-# 10. On Startup => Generate Comedic Summary of Past Activities
+# 10. On Startup => Generate Comedic Summary
 ###############################################################################
 @app.before_first_request
 def load_summary_on_startup():
@@ -455,6 +510,7 @@ def load_summary_on_startup():
     global welcome_summary
     summary = generate_comedic_summary_of_past_activities()
     welcome_summary = summary
+    # Optionally store it in conversation memory
     conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
     save_memory_to_firestore()
     logging.info(f"🔮 Past Activities Summary: {summary}")
@@ -463,7 +519,7 @@ def load_summary_on_startup():
 # 11. Run Flask on Port 8000
 ###############################################################################
 if __name__ == "__main__":
-    # Load existing memory
+    # Load existing memory if any
     conversation_memory = load_memory_from_firestore()
 
     # Generate summary on startup
