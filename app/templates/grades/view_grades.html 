@@ -1,0 +1,65 @@
+<!-- app/templates/grades/view_grades.html -->
+
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Grade Records</h2>
+    <a href="{{ url_for('grades.add_grade') }}" class="btn btn-primary mb-3">Add New Grade Entry</a>
+    {% if grades %}
+    <table class="table table-bordered">
+        <thead>
+            <tr>
+                <th>Subject ID</th>
+                <th>Subject Name</th>
+                <th>Grades</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for grade in grades %}
+            <tr>
+                <td>{{ grade.subject_id }}</td>
+                <td>{{ grade.subject }}</td>
+                <td><pre>{{ grade.grades | tojson(indent=2) }}</pre></td>
+                <td>
+                    <a href="{{ url_for('grades.edit_grade', subject_id=grade.subject_id) }}" class="btn btn-sm btn-warning">Edit</a>
+                    <button class="btn btn-sm btn-danger delete-grade" data-id="{{ grade.subject_id }}">Delete</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No grade records found.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.querySelectorAll('.delete-grade').forEach(button => {
+        button.addEventListener('click', () => {
+            if(confirm('Are you sure you want to delete this grade entry?')) {
+                const sid = button.getAttribute('data-id');
+                fetch(`/grades/delete/${sid}`, {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if(data.success) {
+                        alert(data.message);
+                        location.reload();
+                    } else {
+                        alert(data.error);
+                    }
+                })
+                .catch(err => {
+                    console.error(err);
+                    alert('An error occurred while deleting the grade entry.');
+                });
+            }
+        });
+    });
+</script>
+{% endblock %}

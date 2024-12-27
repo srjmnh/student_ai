@@ -1,0 +1,36 @@
+<!-- app/templates/attendance/view_attendance.html -->
+
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Attendance Records</h2>
+    <a href="{{ url_for('attendance.mark_attendance') }}" class="btn btn-primary mb-3">Mark Attendance</a>
+    {% if records %}
+    <table class="table table-bordered">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Attendance</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for record in records %}
+            <tr>
+                <td>{{ record.date }}</td>
+                <td>
+                    <ul>
+                        {% for sid, status in record.attendance.items() %}
+                        <li>{{ sid }}: {{ status }}</li>
+                        {% endfor %}
+                    </ul>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No attendance records found.</p>
+    {% endif %}
+</div>
+{% endblock %}

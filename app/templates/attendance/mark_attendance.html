@@ -1,0 +1,21 @@
+<!-- app/templates/attendance/mark_attendance.html -->
+
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Mark Attendance</h2>
+    <form method="POST" action="{{ url_for('attendance.mark_attendance') }}">
+        <div class="mb-3">
+            <label for="date" class="form-label">Date *</label>
+            <input type="date" class="form-control" id="date" name="date" required>
+        </div>
+        <div class="mb-3">
+            <label for="attendance" class="form-label">Attendance Data (JSON)</label>
+            <textarea class="form-control" id="attendance" name="attendance" rows="10" placeholder='{"student_id1": "Present", "student_id2": "Absent"}'></textarea>
+            <div class="form-text">Enter attendance as a JSON object with student IDs as keys and their status as values.</div>
+        </div>
+        <button type="submit" class="btn btn-success">Submit Attendance</button>
+    </form>
+</div>
+{% endblock %}

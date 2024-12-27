@@ -1,0 +1,53 @@
+<!-- app/templates/students/edit_student.html -->
+
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Edit Student</h2>
+    <form method="POST" action="{{ url_for('students.edit_student', sid=student.id) }}">
+        <div class="mb-3">
+            <label for="name" class="form-label">Full Name *</label>
+            <input type="text" class="form-control" id="name" name="name" value="{{ student.name }}" required>
+        </div>
+        <div class="mb-3">
+            <label for="age" class="form-label">Age</label>
+            <input type="number" class="form-control" id="age" name="age" value="{{ student.age }}" min="1">
+        </div>
+        <div class="mb-3">
+            <label for="class" class="form-label">Class *</label>
+            <input type="text" class="form-control" id="class" name="class" value="{{ student.class }}" required>
+        </div>
+        <div class="mb-3">
+            <label for="division" class="form-label">Division *</label>
+            <input type="text" class="form-control" id="division" name="division" value="{{ student.division }}" required>
+        </div>
+        <div class="mb-3">
+            <label for="address" class="form-label">Address</label>
+            <textarea class="form-control" id="address" name="address" rows="2">{{ student.address }}</textarea>
+        </div>
+        <div class="mb-3">
+            <label for="phone" class="form-label">Phone</label>
+            <input type="tel" class="form-control" id="phone" name="phone" value="{{ student.phone }}">
+        </div>
+        <div class="mb-3">
+            <label for="guardian_name" class="form-label">Guardian Name</label>
+            <input type="text" class="form-control" id="guardian_name" name="guardian_name" value="{{ student.guardian_name }}">
+        </div>
+        <div class="mb-3">
+            <label for="guardian_phone" class="form-label">Guardian Phone</label>
+            <input type="tel" class="form-control" id="guardian_phone" name="guardian_phone" value="{{ student.guardian_phone }}">
+        </div>
+        <div class="mb-3">
+            <label for="attendance" class="form-label">Attendance</label>
+            <input type="number" class="form-control" id="attendance" name="attendance" value="{{ student.attendance }}" min="0">
+        </div>
+        <div class="mb-3">
+            <label for="grades" class="form-label">Grades (JSON Format)</label>
+            <textarea class="form-control" id="grades" name="grades" rows="4">{{ student.grades | tojson }}</textarea>
+            <div class="form-text">Enter grades as a JSON object. Example: {"Math": "A", "Science": "B+"}</div>
+        </div>
+        <button type="submit" class="btn btn-success">Update Student</button>
+    </form>
+</div>
+{% endblock %}

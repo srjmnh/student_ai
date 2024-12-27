@@ -1,0 +1,21 @@
+<!-- app/templates/grades/edit_grade.html -->
+
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Edit Grade Entry for {{ grade.subject }}</h2>
+    <form method="POST" action="{{ url_for('grades.edit_grade', subject_id=subject_id) }}">
+        <div class="mb-3">
+            <label for="subject" class="form-label">Subject Name *</label>
+            <input type="text" class="form-control" id="subject" name="subject" value="{{ grade.subject }}" required>
+        </div>
+        <div class="mb-3">
+            <label for="grades" class="form-label">Grades (JSON Format)</label>
+            <textarea class="form-control" id="grades" name="grades" rows="10">{{ grade.grades | tojson(indent=2) }}</textarea>
+            <div class="form-text">Enter grades as a JSON object with student IDs as keys and their grades as values.</div>
+        </div>
+        <button type="submit" class="btn btn-success">Update Grade Entry</button>
+    </form>
+</div>
+{% endblock %}
