@@ -1,6 +1,7 @@
 # app/blueprints/students/routes.py
 
 from flask import (
+    Blueprint,  # Imported Blueprint
     render_template,
     request,
     redirect,
@@ -9,12 +10,12 @@ from flask import (
     current_app,
     jsonify
 )
-from app.utils.decorators import login_required, roles_required
+from app.utils import login_required, roles_required
 import json
 import random
 from datetime import datetime
-import hashlib  # If used for password hashing or other purposes
 
+# Initialize the Blueprint
 students_bp = Blueprint('students', __name__, template_folder='templates')
 
 # Utility Functions
