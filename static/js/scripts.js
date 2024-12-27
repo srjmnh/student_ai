@@ -1,5 +1,21 @@
 // scripts.js
 
+// Array of random music URLs (if you have background music)
+const musicTracks = [
+  "https://www.bensound.com/bensound-music/bensound-anewbeginning.mp3",
+  "https://www.bensound.com/bensound-music/bensound-ukulele.mp3",
+  "https://www.bensound.com/bensound-music/bensound-funnysong.mp3"
+];
+
+window.addEventListener('DOMContentLoaded', () => {
+  const bgMusic = document.getElementById('bgMusic');
+  if (bgMusic) {
+    const randomUrl = musicTracks[Math.floor(Math.random() * musicTracks.length)];
+    bgMusic.src = randomUrl;
+    bgMusic.play();
+  }
+});
+
 // Elements
 const chatBody = document.getElementById('chatBody');
 const userInput = document.getElementById('userInput');
@@ -7,9 +23,12 @@ const chatSection = document.getElementById('chatSection');
 const tablePanel = document.getElementById('tablePanel');
 const gradesSection = document.getElementById('gradesSection');
 const homeScreen = document.getElementById('homeScreen');
+<<<<<<< HEAD
 const classDivisionFilter = document.getElementById('classDivisionFilter');
+=======
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 
-// Toast Notification
+// Toast Notification (Optional Enhancement)
 const toastElement = document.getElementById('liveToast');
 const toastBody = document.getElementById('toastBody');
 const bsToast = new bootstrap.Toast(toastElement);
@@ -81,7 +100,10 @@ function parseReply(reply) {
     tablePanel.classList.add('show', 'animate__animated', 'animate__slideInRight');
     chatSection.classList.add('slideLeft');
     initializeTableFunctionality(); // Initialize delete and add functionalities
+<<<<<<< HEAD
     populateClassDivisionFilter(); // Populate the class-division filter dropdown
+=======
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
   } else {
     addBubble(reply, false);
     // Optionally, show a toast notification
@@ -183,6 +205,7 @@ async function saveTableEdits() {
       grades = JSON.parse(grades);
     } catch (e) { }
 
+<<<<<<< HEAD
     // Validation: Ensure 'name', 'class', and 'division' are provided
     if (!name || !sclass || !division) {
       showToast(`Student ID ${sid} is missing 'Name', 'Class', or 'Division'. Please fill them in.`, 'warning');
@@ -492,6 +515,12 @@ async function saveTableEdits() {
       id: sid,
       name,
       age: _safe_int(age),
+=======
+    updates.push({
+      id: sid,
+      name,
+      age,
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
       class: sclass,
       division: division,
       address,
@@ -625,3 +654,13 @@ function removeTypingIndicator() {
     typingBubble.remove();
   }
 }
+<<<<<<< HEAD
+=======
+
+// Ensure proper behavior on window resize for mobile responsiveness
+window.addEventListener('resize', () => {
+  if (window.innerWidth <= 576) {
+    // Adjust elements if necessary
+  }
+});
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)

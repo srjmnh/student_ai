@@ -259,10 +259,6 @@ body.dark-mode #tablePanel {
   transform: scale(1.1);
 }
 
-.filter-section {
-  margin-bottom: 1rem;
-}
-
 .btn-add-row {
   position: fixed;
   bottom: 1.5rem;
@@ -298,10 +294,6 @@ body.dark-mode #tablePanel {
 .btn-delete-row:hover {
   background: #c82333;
   transform: scale(1.1);
-}
-
-.btn-delete-row:active {
-  transform: scale(0.95);
 }
 
 .btn-save-changes {

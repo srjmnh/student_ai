@@ -176,7 +176,11 @@ def bulk_update_students(student_list):
             continue
 
         # Validate required fields
+<<<<<<< HEAD
         if not st.get("name") or not st.get("class") or not st.get("division") or not isinstance(st.get("age"), int):
+=======
+        if not st.get("name") or not isinstance(st.get("age"), int):
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
             logging.warning(f"Invalid data for student ID {sid}. Skipping update.")
             continue
 
@@ -205,7 +209,7 @@ def cleanup_data():
     doc_map = {}
     for doc in docs:
         data = doc.to_dict()
-        data["id"] = doc.id  # Firestore doc ID
+        data["id"] = doc.id  # Real Firestore doc ID
         doc_map[doc.id] = doc  # Keep doc reference
         students.append(data)
 
@@ -263,20 +267,23 @@ def build_students_table_html(heading="Student Records"):
     try:
         all_docs = db.collection("students").stream()
         students = []
-        classes_set = set()
         for doc in all_docs:
             st = doc.to_dict()
             st["id"] = doc.id  # Firestore doc ID
             students.append(st)
+<<<<<<< HEAD
             if st.get("class") and st.get("division"):
                 combined = f"{st['class']}{st['division']}"
                 classes_set.add(combined)
+=======
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 
         if not students:
             logging.info("No students found in Firestore.")
             return "<p>No students found.</p>"
 
         html = f"""
+<<<<<<< HEAD
         <div id="studentsSection" class="animate__animated animate__fadeIn">
           <h4>{heading}</h4>
           <table class="table table-bordered table-sm">
@@ -297,6 +304,27 @@ def build_students_table_html(heading="Student Records"):
               </tr>
             </thead>
             <tbody>
+=======
+    <div id="studentsSection" class="animate__animated animate__fadeIn">
+      <h4>{heading}</h4>
+      <table class="table table-bordered table-sm">
+        <thead class="table-light">
+          <tr>
+            <th>ID</th>
+            <th contenteditable="false">Name</th>
+            <th contenteditable="false">Age</th>
+            <th contenteditable="false">Class</th>
+            <th contenteditable="false">Address</th>
+            <th contenteditable="false">Phone</th>
+            <th contenteditable="false">Guardian</th>
+            <th contenteditable="false">Guardian Phone</th>
+            <th contenteditable="false">Attendance</th>
+            <th contenteditable="false">Grades</th>
+            <th>Actions</th> <!-- New Header for Actions -->
+          </tr>
+        </thead>
+        <tbody>
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
         """
         for st in students:
             sid = st.get("id", "")
@@ -316,6 +344,7 @@ def build_students_table_html(heading="Student Records"):
                 grades = json.dumps(grades)
 
             row_html = f"""
+<<<<<<< HEAD
             <tr>
               <td class="student-id" style="color:#555; user-select:none;">{sid}</td>
               <td contenteditable="true">{name}</td>
@@ -335,6 +364,26 @@ def build_students_table_html(heading="Student Records"):
               </td>
             </tr>
             """
+=======
+        <tr>
+          <td class="student-id" style="color:#555; user-select:none;">{sid}</td>
+          <td contenteditable="true">{name}</td>
+          <td contenteditable="true">{age}</td>
+          <td contenteditable="true">{sclass}</td>
+          <td contenteditable="true">{address}</td>
+          <td contenteditable="true">{phone}</td>
+          <td contenteditable="true">{guardian_name}</td>
+          <td contenteditable="true">{guardian_phone}</td>
+          <td contenteditable="true">{attendance}</td>
+          <td contenteditable="true">{grades}</td>
+          <td>
+            <button class="btn btn-danger btn-delete-row" aria-label="Delete Row">
+              <i class="fas fa-trash-alt"></i>
+            </button>
+          </td>
+        </tr>
+        """
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
             html += row_html
 
         html += """
@@ -383,10 +432,15 @@ def create_comedic_confirmation(action, name=None, student_id=None):
 def add_student(params):
     try:
         name = params.get("name")
+<<<<<<< HEAD
         sclass = params.get("class")
         division = params.get("division")
         if not name or not sclass or not division:
             return {"error": "Missing 'name', 'class', or 'division' to add student."}, 400
+=======
+        if not name:
+            return {"error": "Missing 'name' to add student."}, 400
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
         age = _safe_int(params.get("age"))
         # Check if ID is provided; if not, generate one
         sid = params.get("id") or generate_student_id(name, age)
@@ -394,8 +448,12 @@ def add_student(params):
             "id": sid,
             "name": name,
             "age": age,
+<<<<<<< HEAD
             "class": sclass,
             "division": division,
+=======
+            "class": params.get("class"),
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
             "address": params.get("address"),
             "phone": params.get("phone"),
             "guardian_name": params.get("guardian_name"),
@@ -435,6 +493,7 @@ def update_student(params):
                 })
                 update_fields["grades_history"] = hist
             update_fields[k] = v
+<<<<<<< HEAD
         # Validation: Ensure 'name', 'class', and 'division' are not empty
         if 'name' in update_fields and not update_fields['name']:
             return {"error": "The 'name' field cannot be empty."}, 400
@@ -442,6 +501,8 @@ def update_student(params):
             return {"error": "The 'class' field cannot be empty."}, 400
         if 'division' in update_fields and not update_fields['division']:
             return {"error": "The 'division' field cannot be empty."}, 400
+=======
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
         doc_ref.update(update_fields)
         log_activity("UPDATE_STUDENT", f"Updated {sid} with {update_fields}")
         c = create_comedic_confirmation("update_student", student_id=sid)
@@ -576,6 +637,7 @@ def handle_state_machine(user_prompt):
         found = extract_fields(user_prompt, desired)
         for k, v in found.items():
             pend[k] = v
+<<<<<<< HEAD
         if not pend.get("name") or not pend.get("class") or not pend.get("division"):
             missing = []
             if not pend.get("name"):
@@ -585,6 +647,10 @@ def handle_state_machine(user_prompt):
             if not pend.get("division"):
                 missing.append("'division'")
             return f"I still need the student's {' ,'.join(missing)}. Please provide them or type 'cancel'."
+=======
+        if not pend.get("name"):
+            return "I still need the student's name. Please provide it or type 'cancel'."
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 
         out, status = add_student(pend)
         conversation_context["state"] = STATE_IDLE
@@ -646,6 +712,7 @@ def handle_state_machine(user_prompt):
             a = c.get("action", "")
             p = c.get("parameters", {})
             if a == "view_students":
+<<<<<<< HEAD
                 # Check if class and division filter is applied
                 cls = p.get("class")
                 div = p.get("division")
@@ -662,6 +729,17 @@ def handle_state_machine(user_prompt):
                     conversation_context["pending_params"] = p
                     conversation_context["last_intended_action"] = "add_student"
                     return "Let's add a new student. What's their name, class, and division?"
+=======
+                return build_students_table_html("Student Records")
+            elif a == "cleanup_data":
+                return cleanup_data()
+            elif a == "add_student":
+                if not p.get("name"):
+                    conversation_context["state"] = STATE_AWAITING_STUDENT_INFO
+                    conversation_context["pending_params"] = p
+                    conversation_context["last_intended_action"] = "add_student"
+                    return "Let's add a new student. What's their name?"
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
                 out, sts = add_student(p)
                 if sts == 200 and "message" in out:
                     funny = create_funny_prompt_for_new_student(p["name"])
@@ -675,7 +753,7 @@ def handle_state_machine(user_prompt):
                     return out.get("error", "Error adding student.")
             elif a == "update_student":
                 if not p.get("id"):
-                    return "To update, we need an 'id'. Please provide the student's ID."
+                    return "To update, we need an 'id'."
                 out, sts = update_student(p)
                 return out.get("message", out.get("error", "Error."))
             elif a == "delete_student":
@@ -732,6 +810,7 @@ def bulk_update_students_route():
     return jsonify({"success": True, "updated_ids": updated_ids}), 200
 
 ###############################################################################
+<<<<<<< HEAD
 # 18. Get Unique Class-Division Route
 ###############################################################################
 @app.route("/get_unique_class_divisions", methods=["GET"])
@@ -845,6 +924,9 @@ def view_grades():
 
 ###############################################################################
 # 21. Main Conversation Route
+=======
+# 18. Main Conversation Route
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 ###############################################################################
 @app.route("/process_prompt", methods=["POST"])
 def process_prompt_route():
@@ -876,7 +958,11 @@ def process_prompt_route():
     return jsonify({"message": reply}), 200
 
 ###############################################################################
+<<<<<<< HEAD
 # 22. Global Error Handler
+=======
+# 19. Global Error Handler
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 ###############################################################################
 @app.errorhandler(Exception)
 def handle_exc(e):
@@ -884,7 +970,11 @@ def handle_exc(e):
     return jsonify({"error": "An internal error occurred."}), 500
 
 ###############################################################################
+<<<<<<< HEAD
 # 23. On Startup => Load Memory + Summaries
+=======
+# 20. On Startup => Load Memory + Summaries
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 ###############################################################################
 @app.before_first_request
 def load_on_start():
@@ -895,7 +985,11 @@ def load_on_start():
         conversation_context.update(ctx)
 
 ###############################################################################
+<<<<<<< HEAD
 # 24. Run the Flask Application
+=======
+# 21. Run the Flask Application
+>>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 ###############################################################################
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
