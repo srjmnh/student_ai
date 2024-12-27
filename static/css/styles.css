@@ -149,14 +149,14 @@ body.dark-mode .chat-body {
   box-shadow: 0 6px 10px rgba(0,0,0,0.15);
 }
 
-.chat-body .user-msg {
+.user-msg {
   background: #007bff;
   color: #ffffff;
   align-self: flex-end;
   border-bottom-right-radius: 5px;
 }
 
-.chat-body .ai-msg {
+.ai-msg {
   background: #e9ecef;
   color: #000000;
   align-self: flex-start;
@@ -316,68 +316,6 @@ body.dark-mode #tablePanel {
   transform: scale(0.95);
 }
 
-.btn-close-grades {
-  border-radius: 50%;
-  padding: 0.5rem;
-  background: #dc3545;
-  color: #ffffff;
-  border: none;
-  transition: background 0.3s, transform 0.3s;
-}
-
-.btn-close-grades:hover {
-  background: #c82333;
-  transform: scale(1.1);
-}
-
-.btn-close-grades:active {
-  transform: scale(0.95);
-}
-
-/* Grades Section */
-.grades-section {
-  position: fixed;
-  top: 0;
-  right: 0;
-  width: 60%;
-  height: 100%;
-  background: #ffffff;
-  border-left: 1px solid #ccc;
-  padding: 2rem;
-  overflow-y: auto;
-  transform: translateX(100%);
-  transition: transform 0.5s ease;
-  z-index: 1000;
-  box-shadow: -4px 0 8px rgba(0,0,0,0.1);
-  border-radius: 0 15px 15px 0;
-}
-
-body.dark-mode .grades-section {
-  background: #2c2c2c;
-  color: #f0f2f5;
-  border-left: 1px solid #555;
-}
-
-.grades-section.show {
-  transform: translateX(0%);
-}
-
-.grades-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
-}
-
-.grades-section h4 {
-  margin: 0;
-}
-
-.grades-section .btn-close-grades {
-  border-radius: 50%;
-  padding: 0.5rem;
-}
-
 /* Animations */
 @keyframes fadeIn {
   from { opacity: 0; }
@@ -391,7 +329,7 @@ body.dark-mode .grades-section {
 
 /* Responsive Design */
 @media (max-width: 768px) {
-  #tablePanel, #gradesSection {
+  #tablePanel {
     width: 80%;
   }
 }
@@ -402,9 +340,12 @@ body.dark-mode .grades-section {
     height: 100%;
     border-radius: 0;
   }
-  #tablePanel, #gradesSection {
+  #tablePanel {
     width: 100%;
     border-radius: 0;
+  }
+  #chatSection.slideLeft {
+    transform: translateX(-10%);
   }
   .home-content h1 {
     font-size: 1.5rem;
@@ -430,7 +371,7 @@ body.dark-mode .grades-section {
     max-width: 90%;
     font-size: 0.9rem;
   }
-  .btn-add-row, .btn-close-table, .btn-close-grades {
+  .btn-add-row {
     right: 1rem;
     bottom: 1rem;
     padding: 0.8rem;

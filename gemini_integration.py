@@ -1,8 +1,9 @@
 import re
 import os
 import json
-import uuid
+import random
 import logging
+import base64
 from flask import Flask, request, jsonify, render_template
 
 # Google Generative AI
@@ -37,22 +38,25 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 
 genai.configure(api_key=GEMINI_API_KEY)
+# If you do NOT have access to gemini-1.5-flash, you can switch to "models/chat-bison-001"
 model = genai.GenerativeModel("models/gemini-1.5-flash")
 
 ###############################################################################
-# 4. Firebase Initialization (Service Account Credentials)
+# 4. Firebase Initialization (Base64 credentials)
 ###############################################################################
-if not firebase_admin._apps:
-    service_account_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
-    if not service_account_path or not os.path.exists(service_account_path):
-        raise EnvironmentError("FIREBASE_SERVICE_ACCOUNT_PATH environment variable not set or file does not exist.")
+if 'student_management_app' not in firebase_admin._apps:
+    encoded_json = os.getenv("FIREBASE_CREDENTIALS")
+    if not encoded_json:
+        raise EnvironmentError("FIREBASE_CREDENTIALS environment variable not set or empty.")
     try:
-        cred = credentials.Certificate(service_account_path)
-        firebase_admin.initialize_app(cred)
+        decoded_json = base64.b64decode(encoded_json).decode('utf-8')
+        service_account_info = json.loads(decoded_json)
+        cred = credentials.Certificate(service_account_info)
+        firebase_admin.initialize_app(cred, name='student_management_app')
     except Exception as e:
         raise Exception(f"Error initializing Firebase: {e}")
 
-db = firestore.client()
+db = firestore.client(app=firebase_admin.get_app('student_management_app'))
 logging.info("✅ Firebase and Firestore initialized successfully.")
 
 ###############################################################################
@@ -75,8 +79,7 @@ conversation_context = {
 
 def save_memory_to_firestore():
     try:
-        # Since there's no user authentication, we'll store memory in a single document
-        db.collection('conversation_memory').document('global').set({
+        db.collection('conversation_memory').document('session_1').set({
             "memory": conversation_memory,
             "context": conversation_context
         })
@@ -86,7 +89,7 @@ def save_memory_to_firestore():
 
 def load_memory_from_firestore():
     try:
-        doc = db.collection('conversation_memory').document('global').get()
+        doc = db.collection('conversation_memory').document('session_1').get()
         if doc.exists:
             data = doc.to_dict()
             return data.get("memory", []), data.get("context", {})
@@ -139,7 +142,7 @@ def generate_comedic_summary_of_past_activities():
         return "An error occurred while digging up the past activities..."
 
 ###############################################################################
-# 7. Utility Functions
+# 7. Utility: remove code fences + safe int
 ###############################################################################
 def remove_code_fences(text: str) -> str:
     fenced_pattern = r'^```(?:json)?\s*([\s\S]*?)\s*```$'
@@ -162,7 +165,7 @@ def _safe_int(value):
 ###############################################################################
 def bulk_update_students(student_list):
     """
-    For each entry, update the Firestore document with the given ID in the 'students' collection.
+    For each entry, update the Firestore document with the given ID.
     """
     updated_ids = []
     for st in student_list:
@@ -172,15 +175,11 @@ def bulk_update_students(student_list):
         doc_ref = db.collection("students").document(sid)
         snapshot = doc_ref.get()
         if not snapshot.exists:
-            logging.warning(f"Document not found for ID {sid} in 'students' collection.")
+            logging.warning(f"Document not found for ID {sid}")
             continue
 
         # Validate required fields
-<<<<<<< HEAD
-        if not st.get("name") or not st.get("class") or not st.get("division") or not isinstance(st.get("age"), int):
-=======
         if not st.get("name") or not isinstance(st.get("age"), int):
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
             logging.warning(f"Invalid data for student ID {sid}. Skipping update.")
             continue
 
@@ -262,7 +261,7 @@ def cleanup_data():
 ###############################################################################
 def build_students_table_html(heading="Student Records"):
     """
-    Build an HTML table for displaying student records.
+    Read real doc.id for each record so that editing/saving works properly.
     """
     try:
         all_docs = db.collection("students").stream()
@@ -271,40 +270,12 @@ def build_students_table_html(heading="Student Records"):
             st = doc.to_dict()
             st["id"] = doc.id  # Firestore doc ID
             students.append(st)
-<<<<<<< HEAD
-            if st.get("class") and st.get("division"):
-                combined = f"{st['class']}{st['division']}"
-                classes_set.add(combined)
-=======
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 
         if not students:
             logging.info("No students found in Firestore.")
             return "<p>No students found.</p>"
 
         html = f"""
-<<<<<<< HEAD
-        <div id="studentsSection" class="animate__animated animate__fadeIn">
-          <h4>{heading}</h4>
-          <table class="table table-bordered table-sm">
-            <thead class="table-light">
-              <tr>
-                <th>ID</th>
-                <th contenteditable="false">Name</th>
-                <th contenteditable="false">Age</th>
-                <th contenteditable="false">Class</th>
-                <th contenteditable="false">Division</th>
-                <th contenteditable="false">Address</th>
-                <th contenteditable="false">Phone</th>
-                <th contenteditable="false">Guardian</th>
-                <th contenteditable="false">Guardian Phone</th>
-                <th contenteditable="false">Attendance</th>
-                <th contenteditable="false">Grades</th>
-                <th>Actions</th> <!-- Header for Actions -->
-              </tr>
-            </thead>
-            <tbody>
-=======
     <div id="studentsSection" class="animate__animated animate__fadeIn">
       <h4>{heading}</h4>
       <table class="table table-bordered table-sm">
@@ -324,14 +295,12 @@ def build_students_table_html(heading="Student Records"):
           </tr>
         </thead>
         <tbody>
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
         """
         for st in students:
             sid = st.get("id", "")
             name = st.get("name", "")
             age = st.get("age", "")
             sclass = st.get("class", "")
-            division = st.get("division", "")
             address = st.get("address", "")
             phone = st.get("phone", "")
             guardian_name = st.get("guardian_name", "")
@@ -344,27 +313,6 @@ def build_students_table_html(heading="Student Records"):
                 grades = json.dumps(grades)
 
             row_html = f"""
-<<<<<<< HEAD
-            <tr>
-              <td class="student-id" style="color:#555; user-select:none;">{sid}</td>
-              <td contenteditable="true">{name}</td>
-              <td contenteditable="true">{age}</td>
-              <td contenteditable="true" class="class-cell">{sclass}</td>
-              <td contenteditable="true" class="division-cell">{division}</td>
-              <td contenteditable="true">{address}</td>
-              <td contenteditable="true">{phone}</td>
-              <td contenteditable="true">{guardian_name}</td>
-              <td contenteditable="true">{guardian_phone}</td>
-              <td contenteditable="true">{attendance}</td>
-              <td contenteditable="true">{grades}</td>
-              <td>
-                <button class="btn btn-danger btn-delete-row" aria-label="Delete Row">
-                  <i class="fas fa-trash-alt"></i>
-                </button>
-              </td>
-            </tr>
-            """
-=======
         <tr>
           <td class="student-id" style="color:#555; user-select:none;">{sid}</td>
           <td contenteditable="true">{name}</td>
@@ -383,15 +331,14 @@ def build_students_table_html(heading="Student Records"):
           </td>
         </tr>
         """
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
             html += row_html
 
         html += """
-            </tbody>
-          </table>
-          <button class="btn btn-success mt-3" onclick="saveTableEdits()" aria-label="Save Changes">Save Changes</button>
-        </div>
-        """
+        </tbody>
+      </table>
+      <button class="btn btn-success mt-3" onclick="saveTableEdits()">Save Changes</button>
+    </div>
+    """
         logging.info(f"Built students table with {len(students)} entries.")
         return html
     except Exception as e:
@@ -402,10 +349,10 @@ def build_students_table_html(heading="Student Records"):
 # 11. Student Logic (Add, Update, Delete, Analytics)
 ###############################################################################
 def generate_student_id(name, age):
-    unique_suffix = uuid.uuid4().hex[:6].upper()  # Generates a unique 6-character suffix
-    name_part = (name[:3].upper() if len(name) >= 3 else name.upper())
-    age_str = f"{age:02}" if age else "00"
-    return f"{name_part}{age_str}{unique_suffix}"
+    rnd = random.randint(1000, 9999)
+    name_part = (name[:4].upper() if len(name) >= 4 else name.upper())
+    age_str = str(age) if age else "00"
+    return f"{name_part}{age_str}{rnd}"
 
 def create_funny_prompt_for_new_student(name):
     return (
@@ -432,15 +379,8 @@ def create_comedic_confirmation(action, name=None, student_id=None):
 def add_student(params):
     try:
         name = params.get("name")
-<<<<<<< HEAD
-        sclass = params.get("class")
-        division = params.get("division")
-        if not name or not sclass or not division:
-            return {"error": "Missing 'name', 'class', or 'division' to add student."}, 400
-=======
         if not name:
             return {"error": "Missing 'name' to add student."}, 400
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
         age = _safe_int(params.get("age"))
         # Check if ID is provided; if not, generate one
         sid = params.get("id") or generate_student_id(name, age)
@@ -448,12 +388,7 @@ def add_student(params):
             "id": sid,
             "name": name,
             "age": age,
-<<<<<<< HEAD
-            "class": sclass,
-            "division": division,
-=======
             "class": params.get("class"),
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
             "address": params.get("address"),
             "phone": params.get("phone"),
             "guardian_name": params.get("guardian_name"),
@@ -493,16 +428,6 @@ def update_student(params):
                 })
                 update_fields["grades_history"] = hist
             update_fields[k] = v
-<<<<<<< HEAD
-        # Validation: Ensure 'name', 'class', and 'division' are not empty
-        if 'name' in update_fields and not update_fields['name']:
-            return {"error": "The 'name' field cannot be empty."}, 400
-        if 'class' in update_fields and not update_fields['class']:
-            return {"error": "The 'class' field cannot be empty."}, 400
-        if 'division' in update_fields and not update_fields['division']:
-            return {"error": "The 'division' field cannot be empty."}, 400
-=======
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
         doc_ref.update(update_fields)
         log_activity("UPDATE_STUDENT", f"Updated {sid} with {update_fields}")
         c = create_comedic_confirmation("update_student", student_id=sid)
@@ -622,7 +547,7 @@ def handle_analytics_call(params):
             listing = "\n".join([f"{m.get('id')}: {m.get('name')}" for m in matches if m.get("id")])
             return f"Multiple students found:\n{listing}\nPlease provide the ID."
     else:
-        return "Which student? Please provide the ID or name."
+        return "Which student to analyze? Provide ID or name."
 
 ###############################################################################
 # 15. The Main State Machine
@@ -633,24 +558,12 @@ def handle_state_machine(user_prompt):
 
     # Handle states requiring additional information
     if st == STATE_AWAITING_STUDENT_INFO:
-        desired = ["name", "age", "class", "division", "address", "phone", "guardian_name", "guardian_phone", "attendance", "grades"]
+        desired = ["name", "age", "class", "address", "phone", "guardian_name", "guardian_phone", "attendance", "grades"]
         found = extract_fields(user_prompt, desired)
         for k, v in found.items():
             pend[k] = v
-<<<<<<< HEAD
-        if not pend.get("name") or not pend.get("class") or not pend.get("division"):
-            missing = []
-            if not pend.get("name"):
-                missing.append("'name'")
-            if not pend.get("class"):
-                missing.append("'class'")
-            if not pend.get("division"):
-                missing.append("'division'")
-            return f"I still need the student's {' ,'.join(missing)}. Please provide them or type 'cancel'."
-=======
         if not pend.get("name"):
             return "I still need the student's name. Please provide it or type 'cancel'."
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 
         out, status = add_student(pend)
         conversation_context["state"] = STATE_IDLE
@@ -712,24 +625,6 @@ def handle_state_machine(user_prompt):
             a = c.get("action", "")
             p = c.get("parameters", {})
             if a == "view_students":
-<<<<<<< HEAD
-                # Check if class and division filter is applied
-                cls = p.get("class")
-                div = p.get("division")
-                if cls and div:
-                    heading = f"Student Records for Class {cls}{div}"
-                else:
-                    heading = "Student Records"
-                return build_students_table_html(heading)
-            elif a == "cleanup_data":
-                return cleanup_data()
-            elif a == "add_student":
-                if not p.get("name") or not p.get("class") or not p.get("division"):
-                    conversation_context["state"] = STATE_AWAITING_STUDENT_INFO
-                    conversation_context["pending_params"] = p
-                    conversation_context["last_intended_action"] = "add_student"
-                    return "Let's add a new student. What's their name, class, and division?"
-=======
                 return build_students_table_html("Student Records")
             elif a == "cleanup_data":
                 return cleanup_data()
@@ -739,7 +634,6 @@ def handle_state_machine(user_prompt):
                     conversation_context["pending_params"] = p
                     conversation_context["last_intended_action"] = "add_student"
                     return "Let's add a new student. What's their name?"
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
                 out, sts = add_student(p)
                 if sts == 200 and "message" in out:
                     funny = create_funny_prompt_for_new_student(p["name"])
@@ -783,18 +677,9 @@ def index():
     Render the Home Screen with summary and a "Continue" button.
     Upon clicking "Continue", the Home Screen fades out and the chatbot interface appears.
     """
-    mem, ctx = load_memory_from_firestore()
-    if mem:
-        conversation_memory.extend(mem)
-    if ctx:
-        conversation_context.update(ctx)
-
-    summary = generate_comedic_summary_of_past_activities()
     global welcome_summary
-    welcome_summary = summary  # Show this on the Home Screen
-    conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
-    save_memory_to_firestore()
-    return render_template("index.html", safe_summary=welcome_summary)
+    safe_summary = welcome_summary.replace('"','\\"').replace('\n','\\n')
+    return render_template("index.html", safe_summary=safe_summary)
 
 ###############################################################################
 # 17. Bulk Update Route
@@ -810,126 +695,10 @@ def bulk_update_students_route():
     return jsonify({"success": True, "updated_ids": updated_ids}), 200
 
 ###############################################################################
-<<<<<<< HEAD
-# 18. Get Unique Class-Division Route
-###############################################################################
-@app.route("/get_unique_class_divisions", methods=["GET"])
-def get_unique_class_divisions_route():
-    try:
-        # Fetch unique class-division combinations
-        all_docs = db.collection("students").stream()
-        class_div_set = set()
-        for doc in all_docs:
-            st = doc.to_dict()
-            cls = st.get("class")
-            div = st.get("division")
-            if cls and div:
-                combined = f"{cls}{div}"
-                class_div_set.add(combined)
-        return jsonify({"class_divisions": sorted(list(class_div_set))}), 200
-    except Exception as e:
-        logging.error(f"❌ Error fetching unique class-divisions: {e}")
-        return jsonify({"error": "Failed to fetch class-divisions."}), 500
-
-###############################################################################
-# 19. Grades Management Routes
-###############################################################################
-@app.route("/get_grades", methods=["GET"])
-def get_grades():
-    try:
-        grades_docs = db.collection("grades").stream()
-        grades = []
-        for doc in grades_docs:
-            grade = doc.to_dict()
-            grade["subject_id"] = doc.id
-            grades.append(grade)
-        return jsonify({"grades": grades}), 200
-    except Exception as e:
-        logging.error(f"❌ Error fetching grades: {e}")
-        return jsonify({"error": "Failed to fetch grades."}), 500
-
-@app.route("/update_grades", methods=["POST"])
-def update_grades():
-    try:
-        data = request.json
-        subject_id = data.get("subject_id")
-        student_id = data.get("student_id")
-        term = data.get("term")
-        marks = data.get("marks")
-
-        if not all([subject_id, student_id, term, marks is not None]):
-            return jsonify({"error": "Missing required fields."}), 400
-
-        doc_ref = db.collection("grades").document(subject_id)
-        doc = doc_ref.get()
-        if not doc.exists:
-            # Create the subject document if it doesn't exist
-            doc_ref.set({"subject_name": data.get("subject_name", "Unknown")})
-
-        # Update the marks
-        doc_ref.update({
-            f"marks.{student_id}.{term}": marks
-        })
-
-        log_activity("UPDATE_GRADES", f"Subject: {subject_id}, Student: {student_id}, Term: {term}, Marks: {marks}")
-        return jsonify({"message": "Grades updated successfully."}), 200
-    except Exception as e:
-        logging.error(f"❌ Error updating grades: {e}")
-        return jsonify({"error": "Failed to update grades."}), 500
-
-@app.route("/delete_grade", methods=["POST"])
-def delete_grade():
-    try:
-        data = request.json
-        subject_id = data.get("subject_id")
-        student_id = data.get("student_id")
-
-        if not all([subject_id, student_id]):
-            return jsonify({"error": "Missing 'subject_id' or 'student_id'."}), 400
-
-        doc_ref = db.collection("grades").document(subject_id)
-        doc = doc_ref.get()
-        if not doc.exists:
-            return jsonify({"error": f"No subject with ID {subject_id} found."}), 404
-
-        # Delete the student's marks
-        doc_ref.update({
-            f"marks.{student_id}": firestore.DELETE_FIELD
-        })
-
-        log_activity("DELETE_GRADE", f"Subject: {subject_id}, Student: {student_id}")
-        return jsonify({"message": "Grade deleted successfully."}), 200
-    except Exception as e:
-        logging.error(f"❌ Error deleting grade: {e}")
-        return jsonify({"error": "Failed to delete grade."}), 500
-
-@app.route("/view_grades", methods=["GET"])
-def view_grades():
-    try:
-        grades_docs = db.collection("grades").stream()
-        grades = []
-        for doc in grades_docs:
-            grade = doc.to_dict()
-            grade["subject_id"] = doc.id
-            grades.append(grade)
-        return jsonify({"grades": grades}), 200
-    except Exception as e:
-        logging.error(f"❌ Error viewing grades: {e}")
-        return jsonify({"error": "Failed to view grades."}), 500
-
-###############################################################################
-# 20. Authentication Routes
-###############################################################################
-# Since we're removing authentication, these routes are no longer needed.
-
-###############################################################################
-# 21. Main Conversation Route
-=======
 # 18. Main Conversation Route
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 ###############################################################################
 @app.route("/process_prompt", methods=["POST"])
-def process_prompt_route():
+def process_prompt():
     global conversation_memory, conversation_context
     data = request.json
     user_prompt = data.get("prompt", "").strip()
@@ -958,11 +727,7 @@ def process_prompt_route():
     return jsonify({"message": reply}), 200
 
 ###############################################################################
-<<<<<<< HEAD
-# 22. Global Error Handler
-=======
 # 19. Global Error Handler
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 ###############################################################################
 @app.errorhandler(Exception)
 def handle_exc(e):
@@ -970,26 +735,36 @@ def handle_exc(e):
     return jsonify({"error": "An internal error occurred."}), 500
 
 ###############################################################################
-<<<<<<< HEAD
-# 23. On Startup => Load Memory + Summaries
-=======
 # 20. On Startup => Load Memory + Summaries
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 ###############################################################################
 @app.before_first_request
 def load_on_start():
+    global conversation_memory, conversation_context, welcome_summary
     mem, ctx = load_memory_from_firestore()
     if mem:
         conversation_memory.extend(mem)
     if ctx:
         conversation_context.update(ctx)
 
+    summary = generate_comedic_summary_of_past_activities()
+    welcome_summary = summary  # Show this on the Home Screen
+    conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
+    save_memory_to_firestore()
+    logging.info("Startup summary: " + summary)
+
 ###############################################################################
-<<<<<<< HEAD
-# 24. Run the Flask Application
-=======
 # 21. Run the Flask Application
->>>>>>> parent of 1b72ed1 (CLASS SEGMENTATION)
 ###############################################################################
 if __name__ == "__main__":
+    mem, ctx = load_memory_from_firestore()
+    if mem:
+        conversation_memory.extend(mem)
+    if ctx:
+        conversation_context.update(ctx)
+
+    summary = generate_comedic_summary_of_past_activities()
+    welcome_summary = summary
+    conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
+    save_memory_to_firestore()
+
     app.run(debug=True, port=8000)
