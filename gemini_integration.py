@@ -5,11 +5,7 @@ import random
 import logging
 import base64
 from flask import Flask, request, jsonify, render_template
-
-# Google Generative AI
 import google.generativeai as genai
-
-# Firebase Admin SDK
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -21,14 +17,30 @@ app = Flask(__name__)
 ###############################################################################
 # 2. Configure Logging
 ###############################################################################
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s %(message)s',
-    handlers=[
-        logging.FileHandler("logs/app.log"),
-        logging.StreamHandler()
-    ]
-)
+# Determine Environment
+ENV = os.getenv("FLASK_ENV", "production")  # Default to production
+
+# Configure Logging
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+if ENV == "development":
+    # File Handler for Development
+    # Ensure 'logs' directory exists
+    if not os.path.exists("logs"):
+        os.makedirs("logs")
+    file_handler = logging.FileHandler("logs/app.log")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+# Console Handler for All Environments
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.DEBUG)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 ###############################################################################
 # 3. Configure Gemini (Google Generative AI)
@@ -169,7 +181,7 @@ def delete_student_doc(doc_id):
     """
     ref = db.collection("students").document(doc_id)
     snap = ref.get()
-    if not snap.exists:
+    if not snap.exists():
         return False, "No doc with that ID."
     ref.delete()
     return True, "deleted"
@@ -378,7 +390,6 @@ def cleanup_data():
 def build_students_table_html(heading="Student Records", sclass=None, division=None):
     # New: Allow filtering by class and division
     # Fetch class and division if provided
-    # For Flask, request object should be accessible
     from flask import request  # Import here to avoid circular imports
 
     query = db.collection("students")
