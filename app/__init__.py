@@ -1,5 +1,7 @@
 # app/__init__.py
 
+import os  # Added import statement
+
 from flask import Flask
 from .config import Config
 from .models.firestore_client import init_firestore
@@ -14,7 +16,7 @@ def create_app():
     db = init_firestore()
     
     # Configure Gemini (Google Generative AI)
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Now 'os' is defined
     if not GEMINI_API_KEY:
         app.logger.error("GEMINI_API_KEY environment variable not set.")
         raise ValueError("GEMINI_API_KEY environment variable not set.")
@@ -31,14 +33,12 @@ def create_app():
     from .blueprints.attendance import attendance_bp
     from .blueprints.grades import grades_bp
     from .blueprints.auth import auth_bp
+    from .blueprints.main import main_bp
     
     app.register_blueprint(students_bp, url_prefix='/students')
     app.register_blueprint(attendance_bp, url_prefix='/attendance')
     app.register_blueprint(grades_bp, url_prefix='/grades')
     app.register_blueprint(auth_bp, url_prefix='/auth')
-    
-    # Main route
-    from .blueprints.main import main_bp
     app.register_blueprint(main_bp)
     
     return app
