@@ -25,7 +25,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s %(levelname)s %(message)s',
     handlers=[
-        logging.FileHandler("app.log"),
+        logging.FileHandler("logs/app.log"),
         logging.StreamHandler()
     ]
 )
@@ -38,7 +38,7 @@ if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable not set.")
 
 genai.configure(api_key=GEMINI_API_KEY)
-# If you do NOT have access to gemini-1.5-flash, you can switch to "models/chat-bison-001"
+# If you do NOT have access to gemini-1.5-flash, switch to "models/chat-bison-001"
 model = genai.GenerativeModel("models/gemini-1.5-flash")
 
 ###############################################################################
@@ -47,7 +47,7 @@ model = genai.GenerativeModel("models/gemini-1.5-flash")
 if 'student_management_app' not in firebase_admin._apps:
     encoded_json = os.getenv("FIREBASE_CREDENTIALS")
     if not encoded_json:
-        raise EnvironmentError("FIREBASE_CREDENTIALS environment variable not set or empty.")
+        raise EnvironmentError("FIREBASE_CREDENTIALS not set or empty.")
     try:
         decoded_json = base64.b64decode(encoded_json).decode('utf-8')
         service_account_info = json.loads(decoded_json)
@@ -60,7 +60,7 @@ db = firestore.client(app=firebase_admin.get_app('student_management_app'))
 logging.info("✅ Firebase and Firestore initialized successfully.")
 
 ###############################################################################
-# 5. Conversation + State + Memory
+# 5. Conversation + States
 ###############################################################################
 conversation_memory = []
 MAX_MEMORY = 20
@@ -70,11 +70,14 @@ welcome_summary = ""
 STATE_IDLE = "IDLE"
 STATE_AWAITING_STUDENT_INFO = "AWAITING_STUDENT_INFO"
 STATE_AWAITING_ANALYTICS_TARGET = "AWAITING_ANALYTICS_TARGET"
+STATE_AWAITING_DELETE_CHOICE = "STATE_AWAITING_DELETE_CHOICE"
+STATE_AWAITING_VIEW_FILTER = "AWAITING_VIEW_FILTER"  # New State for Filtering
 
 conversation_context = {
     "state": STATE_IDLE,
     "pending_params": {},
-    "last_intended_action": None
+    "last_intended_action": None,
+    "delete_candidates": []
 }
 
 def save_memory_to_firestore():
@@ -83,7 +86,6 @@ def save_memory_to_firestore():
             "memory": conversation_memory,
             "context": conversation_context
         })
-        logging.info("✅ Memory saved to Firestore.")
     except Exception as e:
         logging.error(f"❌ Failed to save memory: {e}")
 
@@ -105,44 +107,41 @@ def log_activity(action_type, details):
             "details": details,
             "timestamp": firestore.SERVER_TIMESTAMP
         })
-        logging.info(f"✅ Logged activity: {action_type}, details={details}")
     except Exception as e:
         logging.error(f"❌ Failed to log activity: {e}")
 
 ###############################################################################
-# 6. Generate Comedic Summary
+# 6. Summaries
 ###############################################################################
 def generate_comedic_summary_of_past_activities():
+    """
+    Grabs last 100 logs from 'activity_log' and asks Gemini to produce
+    a short dark/funny summary.
+    """
     try:
         logs = db.collection('activity_log').order_by('timestamp').limit(100).stream()
-        activity_lines = []
-        for log_doc in logs:
-            data = log_doc.to_dict()
-            action_type = data.get("action_type")
-            details = data.get("details")
-            activity_lines.append(f"{action_type}: {details}")
+        lines = []
+        for l in logs:
+            d = l.to_dict()
+            lines.append(f"{d.get('action_type')}: {d.get('details')}")
+        if not lines:
+            return "Strangely quiet. No records... yet."
 
-        if not activity_lines:
-            return "Strangely quiet. No records of past deeds... yet."
-
-        combined = "\n".join(activity_lines)
         prompt = (
-            "As a darkly humorous AI, provide a concise (under 50 words) summary "
-            "of these student management actions. Maintain a grim yet witty tone.\n\n"
-            f"{combined}"
+            "As a grimly funny AI, summarize these student management logs under 50 words:\n\n"
+            + "\n".join(lines)
         )
         resp = model.generate_content(prompt)
         if resp.candidates:
-            summary = resp.candidates[0].content.parts[0].text.strip()
-            return summary
+            return resp.candidates[0].content.parts[0].text.strip()
         else:
-            return "No comedic summary conjured. The silence is deafening."
+            return "No comedic summary. The silence is deafening."
     except Exception as e:
-        logging.error(f"❌ Error generating comedic summary: {e}")
-        return "An error occurred while digging up the past activities..."
+        logging.error(f"❌ generate_comedic_summary_of_past_activities error: {e}")
+        return "An error occurred rummaging through the logs."
 
 ###############################################################################
-# 7. Utility: remove code fences + safe int
+# 7. Utils
 ###############################################################################
 def remove_code_fences(text: str) -> str:
     fenced_pattern = r'^```(?:json)?\s*([\s\S]*?)\s*```$'
@@ -161,456 +160,485 @@ def _safe_int(value):
     return None
 
 ###############################################################################
-# 8. Bulk Update for Table Editing
+# 8. Firestore Logic
 ###############################################################################
-def bulk_update_students(student_list):
+def delete_student_doc(doc_id):
     """
-    For each entry, update the Firestore document with the given ID.
+    Directly delete doc from Firestore by ID.
+    Returns (ok, message).
     """
-    updated_ids = []
-    for st in student_list:
-        sid = st.get("id")
-        if not sid:
-            continue
-        doc_ref = db.collection("students").document(sid)
-        snapshot = doc_ref.get()
-        if not snapshot.exists:
-            logging.warning(f"Document not found for ID {sid}")
-            continue
-
-        # Validate required fields
-        if not st.get("name") or not isinstance(st.get("age"), int):
-            logging.warning(f"Invalid data for student ID {sid}. Skipping update.")
-            continue
-
-        fields_to_update = {}
-        for k, v in st.items():
-            if k == "id":
-                continue
-            if k == "age":
-                fields_to_update["age"] = _safe_int(v)
-            else:
-                fields_to_update[k] = v
-        doc_ref.update(fields_to_update)
-        updated_ids.append(sid)
-
-    if updated_ids:
-        log_activity("BULK_UPDATE", f"Updated IDs: {updated_ids}")
-    return updated_ids
+    ref = db.collection("students").document(doc_id)
+    snap = ref.get()
+    if not snap.exists:
+        return False, "No doc with that ID."
+    ref.delete()
+    return True, "deleted"
 
 ###############################################################################
-# 9. Cleanup Data (Deduplicate + remove docs w/o 'id')
+# 9. Student Functions
 ###############################################################################
-def cleanup_data():
-    docs = db.collection("students").stream()
-    # Store actual doc.id so we can remove docs
-    students = []
-    doc_map = {}
-    for doc in docs:
-        data = doc.to_dict()
-        data["id"] = doc.id  # Real Firestore doc ID
-        doc_map[doc.id] = doc  # Keep doc reference
-        students.append(data)
+def gen_student_id(name, age, division):
+    r = random.randint(1000, 9999)
+    part = (name[:4].upper() if len(name) >= 4 else name.upper())
+    a = str(age) if age else "00"
+    d = division.upper()
+    return f"{part}{a}{d}{r}"
 
-    from collections import defaultdict
-    name_groups = defaultdict(list)
-
-    # Remove documents missing a name
-    no_name_deleted = []
-    for st in students:
-        doc_id = st.get("id")
-        if not doc_id:
-            continue  # Firestore documents always have IDs
-        name = st.get("name", "").strip().lower()
-        if not name:
-            # Delete document
-            try:
-                doc_map[doc_id].reference.delete()
-                no_name_deleted.append(doc_id)
-            except Exception as e:
-                logging.error(f"Error deleting doc {doc_id} with no name: {e}")
-            continue
-        # Group by name
-        name_groups[name].append(st)
-
-    # Remove duplicates, keeping the most complete document
-    duplicates_deleted = []
-    for name, group in name_groups.items():
-        if len(group) > 1:
-            # Sort by number of non-empty fields descending
-            sorted_group = sorted(group, key=lambda x: sum(1 for v in x.values() if v not in [None, "", {}]), reverse=True)
-            # Keep the first (most complete), delete the rest
-            for duplicate in sorted_group[1:]:
-                dup_id = duplicate["id"]
-                try:
-                    doc_map[dup_id].reference.delete()
-                    duplicates_deleted.append(dup_id)
-                except Exception as e:
-                    logging.error(f"Error deleting duplicate doc {dup_id}: {e}")
-
-    # Log cleanup activities
-    if no_name_deleted:
-        log_activity("CLEANUP_DATA", f"Removed {len(no_name_deleted)} docs missing name => {no_name_deleted}")
-    if duplicates_deleted:
-        log_activity("CLEANUP_DATA", f"Deleted duplicates => {duplicates_deleted}")
-
-    return build_students_table_html("Data cleaned! Updated student records below:")
-
-###############################################################################
-# 10. Building an Editable Table
-###############################################################################
-def build_students_table_html(heading="Student Records"):
-    """
-    Read real doc.id for each record so that editing/saving works properly.
-    """
-    try:
-        all_docs = db.collection("students").stream()
-        students = []
-        for doc in all_docs:
-            st = doc.to_dict()
-            st["id"] = doc.id  # Firestore doc ID
-            students.append(st)
-
-        if not students:
-            logging.info("No students found in Firestore.")
-            return "<p>No students found.</p>"
-
-        html = f"""
-    <div id="studentsSection" class="animate__animated animate__fadeIn">
-      <h4>{heading}</h4>
-      <table class="table table-bordered table-sm">
-        <thead class="table-light">
-          <tr>
-            <th>ID</th>
-            <th contenteditable="false">Name</th>
-            <th contenteditable="false">Age</th>
-            <th contenteditable="false">Class</th>
-            <th contenteditable="false">Address</th>
-            <th contenteditable="false">Phone</th>
-            <th contenteditable="false">Guardian</th>
-            <th contenteditable="false">Guardian Phone</th>
-            <th contenteditable="false">Attendance</th>
-            <th contenteditable="false">Grades</th>
-            <th>Actions</th> <!-- New Header for Actions -->
-          </tr>
-        </thead>
-        <tbody>
-        """
-        for st in students:
-            sid = st.get("id", "")
-            name = st.get("name", "")
-            age = st.get("age", "")
-            sclass = st.get("class", "")
-            address = st.get("address", "")
-            phone = st.get("phone", "")
-            guardian_name = st.get("guardian_name", "")
-            guardian_phone = st.get("guardian_phone", "")
-            attendance = st.get("attendance", "")
-            grades = st.get("grades", "")
-
-            # Convert dict => JSON
-            if isinstance(grades, dict):
-                grades = json.dumps(grades)
-
-            row_html = f"""
-        <tr>
-          <td class="student-id" style="color:#555; user-select:none;">{sid}</td>
-          <td contenteditable="true">{name}</td>
-          <td contenteditable="true">{age}</td>
-          <td contenteditable="true">{sclass}</td>
-          <td contenteditable="true">{address}</td>
-          <td contenteditable="true">{phone}</td>
-          <td contenteditable="true">{guardian_name}</td>
-          <td contenteditable="true">{guardian_phone}</td>
-          <td contenteditable="true">{attendance}</td>
-          <td contenteditable="true">{grades}</td>
-          <td>
-            <button class="btn btn-danger btn-delete-row" aria-label="Delete Row">
-              <i class="fas fa-trash-alt"></i>
-            </button>
-          </td>
-        </tr>
-        """
-            html += row_html
-
-        html += """
-        </tbody>
-      </table>
-      <button class="btn btn-success mt-3" onclick="saveTableEdits()">Save Changes</button>
-    </div>
-    """
-        logging.info(f"Built students table with {len(students)} entries.")
-        return html
-    except Exception as e:
-        logging.error(f"Error building students table: {e}")
-        return "<p>Error loading student records.</p>"
-
-###############################################################################
-# 11. Student Logic (Add, Update, Delete, Analytics)
-###############################################################################
-def generate_student_id(name, age):
-    rnd = random.randint(1000, 9999)
-    name_part = (name[:4].upper() if len(name) >= 4 else name.upper())
-    age_str = str(age) if age else "00"
-    return f"{name_part}{age_str}{rnd}"
-
-def create_funny_prompt_for_new_student(name):
-    return (
-        f"Write a short witty statement acknowledging we have a new student '{name}'. "
-        "Ask if they'd like to add details like marks or attendance. Under 40 words, humorous."
-    )
-
-def create_comedic_confirmation(action, name=None, student_id=None):
+def comedic_confirmation(action, name=None, doc_id=None):
     if action == "add_student":
-        prompt = f"Generate a short, darkly funny success message confirming the addition of {name} (ID {student_id})."
-    elif action == "update_student":
-        prompt = f"Create a short, darkly funny message confirming the update of student ID {student_id}."
+        pr = f"Generate a short, darkly funny success confirming new student {name} ID {doc_id}."
     elif action == "delete_student":
-        prompt = f"Create a short, darkly funny message confirming the deletion of student ID {student_id}."
+        pr = f"Create a short, darkly witty message confirming the deletion of ID {doc_id}."
+    elif action == "add_grade":
+        pr = f"Generate a humorous confirmation for adding a new grade for subject {name} with ID {doc_id}."
+    elif action == "delete_grade":
+        pr = f"Create a short, darkly witty message confirming the deletion of grade for ID {doc_id}."
+    elif action == "update_grade":
+        pr = f"Generate a humorous confirmation for updating grades for subject ID {doc_id}."
     else:
-        prompt = "A cryptic success message with an ominous twist."
-
-    resp = model.generate_content(prompt)
+        pr = "A cryptic success message."
+    resp = model.generate_content(pr)
     if resp.candidates:
         return resp.candidates[0].content.parts[0].text.strip()[:100]
     else:
-        return "Action completed in the shadows..."
+        return "Action done."
 
 def add_student(params):
-    try:
-        name = params.get("name")
-        if not name:
-            return {"error": "Missing 'name' to add student."}, 400
-        age = _safe_int(params.get("age"))
-        # Check if ID is provided; if not, generate one
-        sid = params.get("id") or generate_student_id(name, age)
-        doc_data = {
-            "id": sid,
-            "name": name,
-            "age": age,
-            "class": params.get("class"),
-            "address": params.get("address"),
-            "phone": params.get("phone"),
-            "guardian_name": params.get("guardian_name"),
-            "guardian_phone": params.get("guardian_phone"),
-            "attendance": params.get("attendance"),
-            "grades": params.get("grades") or {},
-            "grades_history": []
-        }
-        db.collection("students").document(sid).set(doc_data)
-        log_activity("ADD_STUDENT", f"Added {name} => {sid}")
-        conf = create_comedic_confirmation("add_student", name, sid)
-        return {"message": f"{conf} (ID: {sid})"}, 200
-    except Exception as e:
-        logging.error(f"Error in add_student: {e}")
-        return {"error": str(e)}, 500
+    name = params.get("name")
+    if not name:
+        return {"error": "Missing 'name'."}, 400
+    age = _safe_int(params.get("age"))
+    sclass = params.get("class")
+    division = params.get("division")
+    if not sclass or not division:
+        return {"error": "Missing 'class' or 'division'."}, 400
+    sid = gen_student_id(name, age, division)
+    doc = {
+        "id": sid,
+        "name": name,
+        "age": age,
+        "class": sclass,
+        "division": division,  # Added division
+        "address": params.get("address"),
+        "phone": params.get("phone"),
+        "guardian_name": params.get("guardian_name"),
+        "guardian_phone": params.get("guardian_phone"),
+        "attendance": params.get("attendance"),
+        "grades": params.get("grades") or {},
+        "grades_history": []
+    }
+    db.collection("students").document(sid).set(doc)
+    log_activity("ADD_STUDENT", f"Added {name} => {sid}")
+    conf = comedic_confirmation("add_student", name, sid)
+    return {"message": f"{conf} (ID: {sid})"}, 200
 
 def update_student(params):
-    try:
-        sid = params.get("id")
-        if not sid:
-            return {"error": "Missing 'id' for update."}, 400
-        doc_ref = db.collection("students").document(sid)
-        snap = doc_ref.get()
-        if not snap.exists:
-            return {"error": f"No doc with id {sid} found."}, 404
-        update_fields = {}
-        for k, v in params.items():
-            if k == "id":
-                continue
-            if k == "grades":
-                old_grades = snap.to_dict().get("grades", {})
-                hist = snap.to_dict().get("grades_history", [])
-                hist.append({
-                    "old_grades": old_grades,
-                    "new_grades": v,
-                    "timestamp": firestore.SERVER_TIMESTAMP
-                })
-                update_fields["grades_history"] = hist
-            update_fields[k] = v
-        doc_ref.update(update_fields)
-        log_activity("UPDATE_STUDENT", f"Updated {sid} with {update_fields}")
-        c = create_comedic_confirmation("update_student", student_id=sid)
-        return {"message": c}, 200
-    except Exception as e:
-        logging.error(f"update_student error: {e}")
-        return {"error": str(e)}, 500
-
-def delete_student(params):
-    try:
-        sid = params.get("id")
-        if not sid:
-            return {"error": "Missing 'id' for delete."}, 400
-        doc_ref = db.collection("students").document(sid)
-        if not doc_ref.get().exists:
-            return {"error": f"No doc with id {sid}."}, 404
-        doc_ref.delete()
-        log_activity("DELETE_STUDENT", f"Deleted {sid}")
-        c = create_comedic_confirmation("delete_student", student_id=sid)
-        return {"message": c}, 200
-    except Exception as e:
-        logging.error(f"delete_student error: {e}")
-        return {"error": str(e)}, 500
+    sid = params.get("id")
+    if not sid:
+        return {"error": "Missing 'id'."}, 400
+    ref = db.collection("students").document(sid)
+    snap = ref.get()
+    if not snap.exists():
+        return {"error": f"No doc {sid} found."}, 404
+    upd = {}
+    for k, v in params.items():
+        if k == "id":
+            continue
+        if k == "grades":
+            old_g = snap.to_dict().get("grades", {})
+            h = snap.to_dict().get("grades_history", [])
+            h.append({"old": old_g, "new": v})
+            upd["grades_history"] = h
+        upd[k] = v
+    # Validation: Ensure 'class' and 'division' are not empty if they are being updated
+    if 'class' in upd and not upd['class']:
+        return {"error": "The 'class' field cannot be empty."}, 400
+    if 'division' in upd and not upd['division']:
+        return {"error": "The 'division' field cannot be empty."}, 400
+    ref.update(upd)
+    log_activity("UPDATE_STUDENT", f"Updated {sid} => {upd}")
+    c = comedic_confirmation("update_student", doc_id=sid)
+    return {"message": c}, 200
 
 def analytics_student(params):
-    try:
-        sid = params.get("id")
-        if not sid:
-            return {"error": "Missing 'id' for analytics."}, 400
-        snap = db.collection("students").document(sid).get()
-        if not snap.exists:
-            return {"error": f"No doc with id {sid}."}, 404
-        data = snap.to_dict()
-        hist = data.get("grades_history", [])
-        if not hist:
-            return {"message": f"No historical grades for {data['name']}."}, 200
-
-        def avg_marks(g):
-            if not isinstance(g, dict):
-                return 0
-            vals = [x for x in g.values() if isinstance(x, (int, float))]
-            return sum(vals) / len(vals) if vals else 0
-
-        oldest = hist[0]["old_grades"]
-        newest = hist[-1]["new_grades"]
-        old_avg = avg_marks(oldest)
-        new_avg = avg_marks(newest)
-        t = "improved" if new_avg > old_avg else "declined" if new_avg < old_avg else "stayed the same"
-        msg = f"{data['name']}'s performance has {t}. Old Avg: {old_avg}, New Avg: {new_avg}"
-        return {"message": msg}, 200
-    except Exception as e:
-        logging.error(f"analytics_student error: {e}")
-        return {"error": str(e)}, 500
+    sid = params.get("id")
+    if not sid:
+        return {"error": "Missing 'id'."}, 400
+    ref = db.collection("students").document(sid)
+    snap = ref.get()
+    if not snap.exists():
+        return {"error": f"No doc with id {sid}."}, 404
+    # Minimal stub or implement analytics logic here
+    return {"message": "(Analytics not fully implemented)."}, 200
 
 ###############################################################################
-# 12. Classification for "Casual" vs "Firestore"
+# 10. Classification
 ###############################################################################
-def classify_casual_or_firestore(user_prompt):
-    prompt = (
+def classify_casual_or_firestore(prompt):
+    cp = (
         "You are an advanced assistant that decides if the user prompt is casual or a Firestore operation.\n"
         "If casual => {\"type\":\"casual\"}\n"
         "If firestore => {\"type\":\"firestore\",\"action\":\"...\",\"parameters\":{...}}\n"
-        "Allowed actions: add_student, update_student, delete_student, view_students, cleanup_data, analytics_student.\n"
-        f"User Prompt:'{user_prompt}'\n"
+        "Allowed actions: add_student, update_student, delete_student, view_students, cleanup_data, analytics_student, view_grades, add_grade, update_grade, delete_grade.\n"
+        f"User Prompt:'{prompt}'\n"
         "Output JSON only."
     )
-    resp = model.generate_content(prompt)
-    if not resp.candidates:
+    r = model.generate_content(cp)
+    if not r.candidates:
         return {"type": "casual"}
-    raw = resp.candidates[0].content.parts[0].text.strip()
+    raw = r.candidates[0].content.parts[0].text.strip()
     raw = remove_code_fences(raw)
     try:
-        data = json.loads(raw)
-        if "type" not in data:
-            data["type"] = "casual"
-        return data
-    except json.JSONDecodeError:
+        d = json.loads(raw)
+        if "type" not in d:
+            d["type"] = "casual"
+        return d
+    except:
         return {"type": "casual"}
 
 ###############################################################################
-# 13. Additional Field Extraction
+# 11. Searching & Deletion
 ###############################################################################
-def extract_fields(user_input, desired_fields):
-    p = (
-        f"You are an assistant that extracts fields from user input.\n"
-        f"Fields: {', '.join(desired_fields)}\n"
-        f"User Input:'{user_input}'\n"
-        "Return JSON with only those fields.\n"
-    )
-    resp = model.generate_content(p)
-    if not resp.candidates:
-        return {}
-    raw = ''.join(part.text for part in resp.candidates[0].content.parts).strip()
-    raw = remove_code_fences(raw)
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
+def search_students_by_name(name):
+    docs = db.collection("students").where("name", "==", name).stream()
+    results = []
+    for d in docs:
+        st = d.to_dict()
+        st["id"] = d.id
+        results.append(st)
+    return results
+
+def interpret_delete_choice(user_input, candidates):
+    txt = user_input.strip().lower()
+    if txt in ["first", "1", "one"]:
+        if len(candidates) > 0:
+            return candidates[0]["id"]
+    elif txt in ["second", "2", "two"]:
+        if len(candidates) > 1:
+            return candidates[1]["id"]
+    for c in candidates:
+        if txt == c["id"].lower():
+            return c["id"]
+    return None
 
 ###############################################################################
-# 14. Analytics Helper
+# 12. Cleanup_data + build_students_table_html
 ###############################################################################
-def handle_analytics_call(params):
-    if params.get("id"):
-        out, stat = analytics_student(params)
-        return out.get("message", out.get("error", "Analytics error."))
-    elif params.get("name"):
-        docs = db.collection("students").where("name", "==", params["name"]).stream()
-        matches = [d.to_dict() for d in docs]
-        if not matches:
-            return f"No student named {params['name']}."
-        if len(matches) == 1:
-            params["id"] = matches[0].get("id")
-            out, sts = analytics_student(params)
-            return out.get("message", out.get("error", "Error."))
-        else:
-            listing = "\n".join([f"{m.get('id')}: {m.get('name')}" for m in matches if m.get("id")])
-            return f"Multiple students found:\n{listing}\nPlease provide the ID."
+def cleanup_data():
+    """
+    Reads docs from Firestore, removes duplicates by name (keeps the most complete record),
+    and removes documents with no name.
+    """
+    all_docs = db.collection("students").stream()
+    doc_map = {}
+    records = []
+    for d in all_docs:
+        data = d.to_dict()
+        data["id"] = d.id  # real doc ID
+        doc_map[d.id] = d  # store reference if needed
+        records.append(data)
+
+    from collections import defaultdict
+    name_groups = defaultdict(list)
+    removed_for_no_name = []
+    for st in records:
+        nm = str(st.get("name") or "").strip().lower()
+        if not nm:
+            # remove doc
+            ref = doc_map[st["id"]]
+            ref.reference.delete()
+            removed_for_no_name.append(st["id"])
+            continue
+        name_groups[nm].append(st)
+
+    duplicates_removed = []
+    for nm, group in name_groups.items():
+        if len(group) > 1:
+            # find best doc
+            best_score = -1
+            best_student = None
+            for st in group:
+                score = sum(1 for v in st.values() if v not in [None, "", {}])
+                if score > best_score:
+                    best_score = score
+                    best_student = st
+            best_id = best_student["id"]
+            for st in group:
+                if st["id"] != best_id:
+                    doc_map[st["id"]].reference.delete()
+                    duplicates_removed.append(st["id"])
+
+    if removed_for_no_name:
+        log_activity("CLEANUP_DATA", f"Removed doc(s) missing name => {removed_for_no_name}")
+    if duplicates_removed:
+        log_activity("CLEANUP_DATA", f"Removed duplicates => {duplicates_removed}")
+
+    return build_students_table_html("Data cleaned! Updated student records below:")
+
+def build_students_table_html(heading="Student Records", sclass=None, division=None):
+    # New: Allow filtering by class and division
+    # Fetch class and division if provided
+    # For Flask, request object should be accessible
+    from flask import request  # Import here to avoid circular imports
+
+    query = db.collection("students")
+    if sclass and division:
+        query = query.where("class", "==", sclass).where("division", "==", division)
+    elif sclass:
+        query = query.where("class", "==", sclass)
+    elif division:
+        query = query.where("division", "==", division)
+
+    all_docs = query.stream()
+    docs_list = []
+    for d in all_docs:
+        st = d.to_dict()
+        st["id"] = d.id
+        docs_list.append(st)
+
+    if not docs_list:
+        return "<p>No students found for the specified filters.</p>"
+
+    html = f"""
+<div id="studentsSection" class="slideFromRight">
+  <h4>{heading}</h4>
+  <table class="table table-bordered table-sm">
+    <thead class="table-light">
+      <tr>
+        <th>ID</th>
+        <th contenteditable="false">Name</th>
+        <th contenteditable="false">Age</th>
+        <th contenteditable="false">Class</th>
+        <th contenteditable="false">Division</th> <!-- Added Division -->
+        <th contenteditable="false">Address</th>
+        <th contenteditable="false">Phone</th>
+        <th contenteditable="false">Guardian</th>
+        <th contenteditable="false">Guardian Phone</th>
+        <th contenteditable="false">Attendance</th>
+        <th contenteditable="false">Grades</th>
+        <th contenteditable="false">Action</th> <!-- Added Action Column -->
+      </tr>
+    </thead>
+    <tbody>
+    """
+
+    for st in docs_list:
+        sid = st["id"]
+        nm = st.get("name", "")
+        ag = st.get("age", "")
+        cl = st.get("class", "")
+        dv = st.get("division", "")  # Added division
+        ad = st.get("address", "")
+        ph = st.get("phone", "")
+        gn = st.get("guardian_name", "")
+        gp = st.get("guardian_phone", "")
+        at = st.get("attendance", "")
+        gr = st.get("grades", "")
+        if isinstance(gr, dict):
+            gr = json.dumps(gr)
+
+        row = f"""
+    <tr>
+      <td style="color:#555; user-select:none;">{sid}</td>
+      <td contenteditable="true">{nm}</td>
+      <td contenteditable="true">{ag}</td>
+      <td contenteditable="true">{cl}</td>
+      <td contenteditable="true">{dv}</td> <!-- Division Cell -->
+      <td contenteditable="true">{ad}</td>
+      <td contenteditable="true">{ph}</td>
+      <td contenteditable="true">{gn}</td>
+      <td contenteditable="true">{gp}</td>
+      <td contenteditable="true">{at}</td>
+      <td contenteditable="true">{gr}</td>
+      <td>
+        <button class="btn btn-danger btn-delete-row" onclick="deleteRow('{sid}')">🗑️</button>
+      </td>
+    </tr>
+    """
+        html += row
+
+    html += """
+    </tbody>
+  </table>
+  <button class="btn btn-success" onclick="saveTableEdits()">Save</button>
+</div>
+"""
+    return html
+
+###############################################################################
+# 13. Grades Functions
+###############################################################################
+def add_grade(params):
+    subject = params.get("subject")
+    if not subject:
+        return {"error": "Missing 'subject'."}, 400
+    grades = params.get("grades") or {}
+    doc_id = subject.lower().replace(" ", "_")  # Simple doc ID generation
+    doc = {
+        "subject": subject,
+        "grades": grades  # e.g., {"student_id1": {"term1": 85, "term2": 90, "term3": 88}, ...}
+    }
+    db.collection("grades").document(doc_id).set(doc)
+    log_activity("ADD_GRADE", f"Added subject {subject} with ID {doc_id}")
+    conf = comedic_confirmation("add_grade", name=subject, doc_id=doc_id)
+    return {"message": f"{conf} (ID: {doc_id})"}, 200
+
+def update_grade(params):
+    subject_id = params.get("subject_id")
+    student_id = params.get("student_id")
+    term = params.get("term")
+    marks = params.get("marks")
+
+    if not all([subject_id, student_id, term, marks is not None]):
+        return {"error": "Missing required fields."}, 400
+
+    ref = db.collection("grades").document(subject_id)
+    snap = ref.get()
+    if not snap.exists():
+        return {"error": f"No subject with ID {subject_id} found."}, 404
+
+    grades = snap.to_dict().get("grades", {})
+    student_grades = grades.get(student_id, {})
+    old_marks = student_grades.get(term, None)
+    student_grades[term] = marks
+    grades[student_id] = student_grades
+
+    ref.update({"grades": grades})
+    log_activity("UPDATE_GRADE", f"Updated subject {subject_id}, student {student_id}, term {term} to {marks}")
+    conf = comedic_confirmation("update_grade", doc_id=subject_id)
+    return {"message": conf}, 200
+
+def delete_grade(params):
+    subject_id = params.get("subject_id")
+    student_id = params.get("student_id")
+
+    if not all([subject_id, student_id]):
+        return {"error": "Missing 'subject_id' or 'student_id'."}, 400
+
+    ref = db.collection("grades").document(subject_id)
+    snap = ref.get()
+    if not snap.exists():
+        return {"error": f"No subject with ID {subject_id} found."}, 404
+
+    grades = snap.to_dict().get("grades", {})
+    if student_id in grades:
+        del grades[student_id]
+        ref.update({"grades": grades})
+        log_activity("DELETE_GRADE", f"Deleted grades for student {student_id} in subject {subject_id}")
+        conf = comedic_confirmation("delete_grade", doc_id=subject_id)
+        return {"message": conf}, 200
     else:
-        return "Which student to analyze? Provide ID or name."
+        return {"error": f"No grades found for student {student_id} in subject {subject_id}."}, 404
+
+def view_grades(params):
+    """
+    View grades, optionally filtered by subject.
+    """
+    subject = params.get("subject")
+    if subject:
+        query = db.collection("grades").where("subject", "==", subject)
+    else:
+        query = db.collection("grades")
+
+    grades_docs = query.stream()
+    grades_list = []
+    for d in grades_docs:
+        grade = d.to_dict()
+        grade["subject_id"] = d.id
+        grades_list.append(grade)
+
+    if not grades_list:
+        return "<p>No grades found.</p>"
+
+    html = f"""
+<div id="gradesSection" class="slideFromRight">
+  <h4>Student Grades</h4>
+  <table class="table table-bordered table-sm">
+    <thead class="table-light">
+      <tr>
+        <th>Subject ID</th>
+        <th>Subject Name</th>
+        <th>Student ID</th>
+        <th>Term 1</th>
+        <th>Term 2</th>
+        <th>Term 3</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+    """
+
+    for grade in grades_list:
+        subject_id = grade.get("subject_id", "")
+        subject_name = grade.get("subject", "")
+        grades = grade.get("grades", {})
+        for student_id, terms in grades.items():
+            term1 = terms.get("term1", "")
+            term2 = terms.get("term2", "")
+            term3 = terms.get("term3", "")
+            row = f"""
+    <tr>
+      <td>{subject_id}</td>
+      <td>{subject_name}</td>
+      <td>{student_id}</td>
+      <td contenteditable="true">{term1}</td>
+      <td contenteditable="true">{term2}</td>
+      <td contenteditable="true">{term3}</td>
+      <td>
+        <button class="btn btn-danger btn-delete-grade" onclick="deleteGrade('{subject_id}', '{student_id}')">🗑️</button>
+      </td>
+    </tr>
+            """
+            html += row
+
+    html += """
+    </tbody>
+  </table>
+  <button class="btn btn-success" onclick="saveGradesEdits()">Save Grades</button>
+</div>
+"""
+    return html
 
 ###############################################################################
-# 15. The Main State Machine
+# 14. State Handling
 ###############################################################################
 def handle_state_machine(user_prompt):
     st = conversation_context["state"]
     pend = conversation_context["pending_params"]
+    delete_candidates = conversation_context.get("delete_candidates", [])
 
     # Handle states requiring additional information
-    if st == STATE_AWAITING_STUDENT_INFO:
-        desired = ["name", "age", "class", "address", "phone", "guardian_name", "guardian_phone", "attendance", "grades"]
-        found = extract_fields(user_prompt, desired)
-        for k, v in found.items():
-            pend[k] = v
-        if not pend.get("name"):
-            return "I still need the student's name. Please provide it or type 'cancel'."
+    if st == STATE_AWAITING_DELETE_CHOICE:
+        chosen = interpret_delete_choice(user_prompt, delete_candidates)
+        conversation_context["state"] = STATE_IDLE
+        conversation_context["delete_candidates"] = []
+        if not chosen:
+            return "I can't interpret your choice. (Try 'first', 'second', or an actual ID)."
+        ok, msg = delete_student_doc(chosen)
+        if not ok:
+            return msg
+        log_activity("DELETE_STUDENT", f"Deleted {chosen} after choice.")
+        conf = comedic_confirmation("delete_student", doc_id=chosen)
+        return conf
 
-        out, status = add_student(pend)
+    elif st == STATE_AWAITING_VIEW_FILTER:
+        # Expecting class and division
+        filters = extract_filters(user_prompt)
+        if not filters.get("class") or not filters.get("division"):
+            missing = []
+            if not filters.get("class"):
+                missing.append("'class'")
+            if not filters.get("division"):
+                missing.append("'division'")
+            return f"I still need the student's {' and '.join(missing)}. Please provide them or type 'cancel'."
+
+        sclass = filters.get("class")
+        division = filters.get("division")
         conversation_context["state"] = STATE_IDLE
         conversation_context["pending_params"] = {}
         conversation_context["last_intended_action"] = None
-        if status == 200 and "message" in out:
-            funny_p = create_funny_prompt_for_new_student(pend["name"])
-            r2 = model.generate_content(funny_p)
-            if r2.candidates:
-                tx = r2.candidates[0].content.parts[0].text.strip()
-                return out["message"] + "\n\n" + tx
-            else:
-                return out["message"]
-        else:
-            return out.get("error", "Error adding student.")
 
-    elif st == STATE_AWAITING_ANALYTICS_TARGET:
-        desired = ["id", "name"]
-        found = extract_fields(user_prompt, desired)
-        for k, v in found.items():
-            pend[k] = v
-        if pend.get("id"):
-            out, stat = analytics_student(pend)
-            conversation_context["state"] = STATE_IDLE
-            conversation_context["pending_params"] = {}
-            conversation_context["last_intended_action"] = None
-            return out.get("message", out.get("error", "Error."))
-        elif pend.get("name"):
-            docs = db.collection("students").where("name", "==", pend["name"]).stream()
-            matches = [d.to_dict() for d in docs]
-            if not matches:
-                conversation_context["state"] = STATE_IDLE
-                conversation_context["pending_params"] = {}
-                conversation_context["last_intended_action"] = None
-                return f"No student named {pend['name']}."
-            if len(matches) == 1:
-                pend["id"] = matches[0].get("id")
-                out, sts = analytics_student(pend)
-                conversation_context["state"] = STATE_IDLE
-                conversation_context["pending_params"] = {}
-                conversation_context["last_intended_action"] = None
-                return out.get("message", out.get("error", "Error."))
-            else:
-                listing = "\n".join([f"{m.get('id')}: {m.get('name')}" for m in matches if m.get("id")])
-                return f"Multiple students found:\n{listing}\nPlease provide the ID."
-        else:
-            return "Which student? Please provide the ID or name."
+        return build_students_table_html(f"Displaying students for Class {sclass} Division {division}:", sclass, division)
 
     else:
         # IDLE state: classify and handle actions
@@ -620,140 +648,256 @@ def handle_state_machine(user_prompt):
             if r.candidates:
                 return r.candidates[0].content.parts[0].text.strip()
             else:
-                return "I have nothing to say."
+                return "I'm out of words..."
+
         elif c.get("type") == "firestore":
             a = c.get("action", "")
             p = c.get("parameters", {})
             if a == "view_students":
-                return build_students_table_html("Student Records")
-            elif a == "cleanup_data":
-                return cleanup_data()
+                # Check if class and division filter is applied
+                sclass = p.get("class")
+                division = p.get("division")
+                if sclass and division:
+                    return build_students_table_html(f"Displaying students for Class {sclass} Division {division}:", sclass, division)
+                elif sclass or division:
+                    # If only one filter is provided, prompt for the other
+                    conversation_context["state"] = STATE_AWAITING_VIEW_FILTER
+                    conversation_context["pending_params"] = p
+                    conversation_context["last_intended_action"] = "view_students"
+                    missing = []
+                    if not sclass:
+                        missing.append("'class'")
+                    if not division:
+                        missing.append("'division'")
+                    return f"I need the student's {' and '.join(missing)} to filter. Please provide them or type 'cancel'."
+
             elif a == "add_student":
-                if not p.get("name"):
+                # Ensure both 'name', 'class', and 'division' are provided
+                if not p.get("name") or not p.get("class") or not p.get("division"):
                     conversation_context["state"] = STATE_AWAITING_STUDENT_INFO
                     conversation_context["pending_params"] = p
                     conversation_context["last_intended_action"] = "add_student"
-                    return "Let's add a new student. What's their name?"
-                out, sts = add_student(p)
-                if sts == 200 and "message" in out:
-                    funny = create_funny_prompt_for_new_student(p["name"])
-                    rr = model.generate_content(funny)
-                    if rr.candidates:
-                        tx = rr.candidates[0].content.parts[0].text.strip()
-                        return out["message"] + "\n\n" + tx
+                    missing = []
+                    if not p.get("name"):
+                        missing.append("'name'")
+                    if not p.get("class"):
+                        missing.append("'class'")
+                    if not p.get("division"):
+                        missing.append("'division'")
+                    return f"I need the student's {' ,'.join(missing)}. Please provide them or type 'cancel'."
+                out, sts_code = add_student(p)
+                if sts_code == 200 and "message" in out:
+                    # Comedic
+                    funny = f"Write a short witty statement acknowledging we have a new student '{p['name']}'. " \
+                            f"Ask if they'd like to add details like marks or attendance. Under 40 words, humorous."
+                    r2 = model.generate_content(funny)
+                    if r2.candidates:
+                        t = r2.candidates[0].content.parts[0].text.strip()
+                        return out["message"] + "\n\n" + t
                     else:
                         return out["message"]
                 else:
                     return out.get("error", "Error adding student.")
+
             elif a == "update_student":
-                if not p.get("id"):
-                    return "To update, we need an 'id'."
-                out, sts = update_student(p)
-                return out.get("message", out.get("error", "Error."))
+                return handle_update_student(p)
+
             elif a == "delete_student":
-                if not p.get("id"):
-                    return "We need the 'id' to delete a student."
-                out, sts = delete_student(p)
-                return out.get("message", out.get("error", "Error."))
-            elif a == "analytics_student":
-                if not (p.get("id") or p.get("name")):
-                    conversation_context["state"] = STATE_AWAITING_ANALYTICS_TARGET
-                    conversation_context["pending_params"] = p
-                    conversation_context["last_intended_action"] = "analytics_student"
-                    return "Which student do you want to analyze? Please provide the ID or name."
+                # Check if ID is provided
+                sid = p.get("id")
+                if sid:
+                    ok, msg = delete_student_doc(sid)
+                    if not ok:
+                        return "No doc with that ID found."
+                    log_activity("DELETE_STUDENT", f"Deleted {sid} directly.")
+                    conf = comedic_confirmation("delete_student", doc_id=sid)
+                    return conf
+                # Else, check if name is provided
+                nm = p.get("name")
+                if not nm:
+                    return "We need an ID or name to delete."
+                matches = search_students_by_name(nm)
+                if not matches:
+                    return f"No student named {nm} found."
+                if len(matches) == 1:
+                    found_id = matches[0]["id"]
+                    ok, msg = delete_student_doc(found_id)
+                    if not ok:
+                        return "No doc with that ID found."
+                    log_activity("DELETE_STUDENT", f"Deleted {found_id}")
+                    conf = comedic_confirmation("delete_student", doc_id=found_id)
+                    return conf
                 else:
-                    return handle_analytics_call(p)
+                    conversation_context["state"] = STATE_AWAITING_DELETE_CHOICE
+                    conversation_context["delete_candidates"] = matches
+                    lines = []
+                    for i, m in enumerate(matches):
+                        lines.append(f"{i+1}. ID={m['id']} (class={m.get('class','')}{m.get('division','')}, age={m.get('age','')})")
+                    listing = "\n".join(lines)
+                    return f"Multiple matches for {nm}:\n{listing}\nWhich one to delete? ('first','second', or the ID)."
+
+            elif a == "cleanup_data":
+                return cleanup_data()
+
+            elif a == "view_grades":
+                # Optionally, accept subject filter
+                subject = p.get("subject")
+                return view_grades({"subject": subject})
+
+            elif a == "add_grade":
+                return add_grade(p)
+
+            elif a == "update_grade":
+                return update_grade(p)
+
+            elif a == "delete_grade":
+                return delete_grade(p)
+
             else:
                 return f"Unknown Firestore action: {a}"
+
         else:
-            return "I'm not sure. Is it casual or a Firestore request?"
+            return "I'm not sure what you're asking."
+
+def handle_update_student(p):
+    return update_student(p)
 
 ###############################################################################
-# 16. Flask Routes and HTML Rendering
+# 15. Additional Routes
 ###############################################################################
-@app.route("/")
-def index():
-    """
-    Render the Home Screen with summary and a "Continue" button.
-    Upon clicking "Continue", the Home Screen fades out and the chatbot interface appears.
-    """
-    global welcome_summary
-    safe_summary = welcome_summary.replace('"','\\"').replace('\n','\\n')
-    return render_template("index.html", safe_summary=safe_summary)
+@app.route("/delete_by_id", methods=["POST"])
+def delete_by_id():
+    data = request.json
+    sid = data.get("id")
+    if not sid:
+        return jsonify({"error": "No ID"}), 400
+    ok, msg = delete_student_doc(sid)
+    if not ok:
+        return jsonify({"error": msg}), 404
+    log_activity("DELETE_STUDENT", f"Deleted {sid} via trash icon.")
+    conf = comedic_confirmation("delete_student", doc_id=sid)
+    return jsonify({"success": True, "message": conf}), 200
 
-###############################################################################
-# 17. Bulk Update Route
-###############################################################################
 @app.route("/bulk_update_students", methods=["POST"])
 def bulk_update_students_route():
     data = request.json
-    updates = data.get("updates", [])
-    if not updates:
+    ups = data.get("updates", [])
+    if not ups:
         return jsonify({"error": "No updates provided."}), 400
-
-    updated_ids = bulk_update_students(updates)
-    return jsonify({"success": True, "updated_ids": updated_ids}), 200
+    updated = []
+    for st in ups:
+        sid = st.get("id")
+        if not sid:
+            continue
+        doc_ref = db.collection("students").document(sid)
+        snap = doc_ref.get()
+        if not snap.exists():
+            continue
+        # Update fields
+        fields_to_update = {}
+        for k, v in st.items():
+            if k == "id":
+                continue
+            if k == "age":
+                fields_to_update["age"] = _safe_int(v)
+            else:
+                fields_to_update[k] = v
+        doc_ref.update(fields_to_update)
+        updated.append(sid)
+    if updated:
+        log_activity("BULK_UPDATE", f"Updated => {updated}")
+    return jsonify({"success": True, "updated_ids": updated}), 200
 
 ###############################################################################
-# 18. Main Conversation Route
+# 16. Grades Routes
+###############################################################################
+@app.route("/add_grade", methods=["POST"])
+def add_grade_route():
+    data = request.json
+    out, sts_code = add_grade(data)
+    if sts_code == 200:
+        return jsonify({"message": out["message"]}), 200
+    else:
+        return jsonify({"error": out.get("error", "Failed to add grade.")}), sts_code
+
+@app.route("/update_grade", methods=["POST"])
+def update_grade_route():
+    data = request.json
+    out, sts_code = update_grade(data)
+    if sts_code == 200:
+        return jsonify({"message": out["message"]}), 200
+    else:
+        return jsonify({"error": out.get("error", "Failed to update grade.")}), sts_code
+
+@app.route("/delete_grade", methods=["POST"])
+def delete_grade_route():
+    data = request.json
+    out, sts_code = delete_grade(data)
+    if sts_code == 200:
+        return jsonify({"message": out["message"]}), 200
+    else:
+        return jsonify({"error": out.get("error", "Failed to delete grade.")}), sts_code
+
+@app.route("/view_grades", methods=["GET"])
+def view_grades_route():
+    subject = request.args.get("subject")
+    return view_grades({"subject": subject})
+
+###############################################################################
+# 17. The main HTML route with chat interface
+###############################################################################
+@app.route("/")
+def index():
+    global welcome_summary
+    # We'll embed the comedic summary as the first AI message in the chat
+    return render_template("index.html", summary=welcome_summary)
+
+###############################################################################
+# 18. Process Prompt Route
 ###############################################################################
 @app.route("/process_prompt", methods=["POST"])
 def process_prompt():
-    global conversation_memory, conversation_context
     data = request.json
-    user_prompt = data.get("prompt", "").strip()
-    if not user_prompt:
+    prompt = data.get("prompt")
+    if not prompt:
         return jsonify({"error": "No prompt provided."}), 400
 
-    # Append user prompt to memory
-    conversation_memory.append({"role": "user", "content": user_prompt})
+    # Handle state machine
+    response_message = handle_state_machine(prompt)
+
+    # Append to conversation memory
+    conversation_memory.append({"role": "user", "content": prompt})
+    conversation_memory.append({"role": "assistant", "content": response_message})
+
+    # Trim memory if exceeds
     if len(conversation_memory) > MAX_MEMORY:
-        conversation_memory = conversation_memory[-MAX_MEMORY:]
+        conversation_memory.pop(0)
 
-    # Handle reset commands
-    if user_prompt.lower() in ["reset memory", "reset conversation", "cancel"]:
-        conversation_memory.clear()
-        conversation_context["state"] = STATE_IDLE
-        conversation_context["pending_params"] = {}
-        conversation_context["last_intended_action"] = None
-        save_memory_to_firestore()
-        return jsonify({"message": "Memory and context reset."}), 200
-
-    # Process the user prompt through the state machine
-    reply = handle_state_machine(user_prompt)
-    # Append AI reply to memory
-    conversation_memory.append({"role": "AI", "content": reply})
     save_memory_to_firestore()
-    return jsonify({"message": reply}), 200
+
+    return jsonify({"message": response_message}), 200
 
 ###############################################################################
-# 19. Global Error Handler
+# 19. Helper Function to Extract Filters
 ###############################################################################
-@app.errorhandler(Exception)
-def handle_exc(e):
-    logging.error(f"Uncaught Exception: {e}")
-    return jsonify({"error": "An internal error occurred."}), 500
+def extract_filters(user_prompt):
+    """
+    A simple parser to extract 'class' and 'division' from user prompt.
+    This can be enhanced with more sophisticated NLP techniques.
+    """
+    filters = {}
+    # Example parsing logic (needs to be improved for real-world use)
+    # Look for patterns like 'class 10A' or 'class 10' and 'division A'
+    class_match = re.search(r'class\s*(\d+)', user_prompt.lower())
+    division_match = re.search(r'division\s*([a-zA-Z])', user_prompt.lower())
+    if class_match:
+        filters['class'] = class_match.group(1)
+    if division_match:
+        filters['division'] = division_match.group(1)
+    return filters
 
 ###############################################################################
-# 20. On Startup => Load Memory + Summaries
-###############################################################################
-@app.before_first_request
-def load_on_start():
-    global conversation_memory, conversation_context, welcome_summary
-    mem, ctx = load_memory_from_firestore()
-    if mem:
-        conversation_memory.extend(mem)
-    if ctx:
-        conversation_context.update(ctx)
-
-    summary = generate_comedic_summary_of_past_activities()
-    welcome_summary = summary  # Show this on the Home Screen
-    conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
-    save_memory_to_firestore()
-    logging.info("Startup summary: " + summary)
-
-###############################################################################
-# 21. Run the Flask Application
+# 20. Actually run Flask
 ###############################################################################
 if __name__ == "__main__":
     mem, ctx = load_memory_from_firestore()
@@ -766,5 +910,6 @@ if __name__ == "__main__":
     welcome_summary = summary
     conversation_memory.append({"role": "system", "content": "PAST_ACTIVITIES_SUMMARY: " + summary})
     save_memory_to_firestore()
+    logging.info("Startup summary: " + summary)
 
     app.run(debug=True, port=8000)
