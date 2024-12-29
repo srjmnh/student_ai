@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Employee - HR Dashboard{% endblock %}
+
+{% block content %}
+<h2 class="mt-4">Edit Employee Details</h2>
+<form id="editEmployeeForm">
+    <div class="mb-3">
+        <label for="emp_id" class="form-label">Employee ID:</label>
+        <input type="text" class="form-control" id="emp_id" value="{{ emp_id }}" readonly>
+    </div>
+    <div class="mb-3">
+        <label for="name" class="form-label">Name:</label>
+        <input type="text" class="form-control" id="name" required>
+    </div>
+    <div class="mb-3">
+        <label for="position" class="form-label">Position:</label>
+        <input type="text" class="form-control" id="position" required>
+    </div>
+    <div class="mb-3">
+        <label for="department" class="form-label">Department:</label>
+        <input type="text" class="form-control" id="department" required>
+    </div>
+    <div class="mb-3">
+        <label for="email" class="form-label">Email:</label>
+        <input type="email" class="form-control" id="email" required>
+    </div>
+    <div class="mb-3">
+        <label for="phone" class="form-label">Phone:</label>
+        <input type="text" class="form-control" id="phone" required>
+    </div>
+    <button type="submit" class="btn btn-primary">Update Employee</button>
+</form>
+
+<script>
+    async function fetchEmployeeDetails() {
+        const emp_id = "{{ emp_id }}";
+        const token = localStorage.getItem('token');
+        try {
+            const response = await fetch(`/hr/get_employee/${emp_id}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+            const data = await response.json();
+            if (response.status === 200) {
+                const emp = data.employee;
+                document.getElementById('name').value = emp.name;
+                document.getElementById('position').value = emp.position;
+                document.getElementById('department').value = emp.department;
+                document.getElementById('email').value = emp.email;
+                document.getElementById('phone').value = emp.phone;
+            } else {
+                alert(`Error: ${data.error}`);
+            }
+        } catch (error) {
+            console.error('Error fetching employee details:', error);
+            alert('An error occurred while fetching employee details.');
+        }
+    }
+
+    // Handle Edit Employee Form Submission
+    document.getElementById('editEmployeeForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const emp_id = document.getElementById('emp_id').value.trim();
+        const name = document.getElementById('name').value.trim();
+        const position = document.getElementById('position').value.trim();
+        const department = document.getElementById('department').value.trim();
+        const email = document.getElementById('email').value.trim();
+        const phone = document.getElementById('phone').value.trim();
+
+        const token = localStorage.getItem('token');
+
+        try {
+            const response = await fetch(`/hr/edit_employee/${emp_id}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    name,
+                    position,
+                    department,
+                    email,
+                    phone
+                })
+            });
+            const data = await response.json();
+            if (response.status === 200) {
+                alert(data.message);
+                window.location.href = `/hr/view_employee/${emp_id}`;
+            } else {
+                alert(`Error: ${data.error}`);
+            }
+        } catch (error) {
+            console.error('Error updating employee:', error);
+            alert('An error occurred while updating the employee.');
+        }
+    });
+
+    // Fetch employee details on page load
+    fetchEmployeeDetails();
+</script>
+{% endblock %}

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}Home - Mini ERP System{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <h2 class="mt-5">Welcome to the Mini ERP System</h2>
+        <p>Please select your role to continue:</p>
+        <form id="roleSelectionForm">
+            <div class="mb-3">
+                <select class="form-select" id="roleSelect" name="role" required>
+                    <option value="" selected disabled>Select Role</option>
+                    <option value="hr">Human Resources (HR)</option>
+                    <option value="employee">Employee</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Proceed</button>
+        </form>
+        <hr>
+        <p>Don't have an account? <a href="#" id="showRegister">Register here</a>.</p>
+        <p>Already have an account? <a href="#" id="showLogin">Login here</a>.</p>
+        
+        <!-- Login Form -->
+        <div id="loginForm" class="mt-4" style="display: none;">
+            <h3>Login</h3>
+            <form id="firebaseLoginForm">
+                <div class="mb-3">
+                    <label for="loginEmail" class="form-label">Email:</label>
+                    <input type="email" class="form-control" id="loginEmail" required>
+                </div>
+                <div class="mb-3">
+                    <label for="loginPassword" class="form-label">Password:</label>
+                    <input type="password" class="form-control" id="loginPassword" required>
+                </div>
+                <button type="submit" class="btn btn-success">Login</button>
+            </form>
+        </div>
+        
+        <!-- Register Form -->
+        <div id="registerForm" class="mt-4" style="display: none;">
+            <h3>Register</h3>
+            <form id="firebaseRegisterForm">
+                <div class="mb-3">
+                    <label for="registerEmail" class="form-label">Email:</label>
+                    <input type="email" class="form-control" id="registerEmail" required>
+                </div>
+                <div class="mb-3">
+                    <label for="registerPassword" class="form-label">Password:</label>
+                    <input type="password" class="form-control" id="registerPassword" required>
+                </div>
+                <div class="mb-3">
+                    <label for="registerRole" class="form-label">Role:</label>
+                    <select class="form-select" id="registerRole" name="role" required>
+                        <option value="" selected disabled>Select Role</option>
+                        <option value="hr">Human Resources (HR)</option>
+                        <option value="employee">Employee</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary">Register</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

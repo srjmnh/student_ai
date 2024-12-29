@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Submit Leave - Employee Dashboard{% endblock %}
+
+{% block content %}
+<h2 class="mt-4">Submit Leave Request</h2>
+<form id="submitLeaveForm">
+    <div class="mb-3">
+        <label for="start_date" class="form-label">Start Date:</label>
+        <input type="date" class="form-control" id="start_date" required>
+    </div>
+    <div class="mb-3">
+        <label for="end_date" class="form-label">End Date:</label>
+        <input type="date" class="form-control" id="end_date" required>
+    </div>
+    <div class="mb-3">
+        <label for="reason" class="form-label">Reason:</label>
+        <textarea class="form-control" id="reason" rows="3" required></textarea>
+    </div>
+    <button type="submit" class="btn btn-primary">Submit Leave</button>
+</form>
+
+<script>
+    // Handle Submit Leave Form Submission
+    document.getElementById('submitLeaveForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const start_date = document.getElementById('start_date').value;
+        const end_date = document.getElementById('end_date').value;
+        const reason = document.getElementById('reason').value.trim();
+
+        const token = localStorage.getItem('token');
+
+        try {
+            const response = await fetch('/employee/submit_leave', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    start_date,
+                    end_date,
+                    reason
+                })
+            });
+            const data = await response.json();
+            if (response.status === 201) {
+                alert(data.message);
+                window.location.href = '/employee/dashboard';
+            } else {
+                alert(`Error: ${data.error}`);
+            }
+        } catch (error) {
+            console.error('Error submitting leave:', error);
+            alert('An error occurred while submitting the leave request.');
+        }
+    });
+</script>
+{% endblock %}
