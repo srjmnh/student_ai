@@ -1,5 +1,5 @@
 from flask import Flask
-from config import Config
+from erp_system.config import Config
 from app.firestore_client import get_firestore_client
 from app.gemini_integration import GeminiIntegration
 import logging
