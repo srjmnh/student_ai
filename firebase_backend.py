@@ -966,3 +966,18 @@ if __name__ == "__main__":
     save_memory_to_firestore()
 
     app.run(debug=True, port=8000)
+from flask import Flask, request, jsonify
+from gemini_integration import Gemini
+
+app = Flask(__name__)
+gemini = Gemini()
+
+@app.route('/gemini/respond', methods=['POST'])
+def gemini_respond():
+    data = request.get_json()
+    user_query = data.get("query", "")
+    response = gemini.get_response(user_query)  # Assume 'get_response' processes the input
+    return jsonify({"response": response})
+
+if __name__ == "__main__":
+    app.run(debug=True)
