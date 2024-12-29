@@ -981,3 +981,22 @@ def gemini_respond():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+from flask import Flask, request, jsonify
+from gemini_integration import Gemini
+
+app = Flask(__name__)
+gemini = Gemini()
+
+@app.route('/gemini/respond', methods=['POST'])
+def gemini_respond():
+    try:
+        data = request.get_json()
+        user_query = data.get("query", "")
+        response = gemini.get_response(user_query)  # Assuming get_response processes input
+        return jsonify({"response": response}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)

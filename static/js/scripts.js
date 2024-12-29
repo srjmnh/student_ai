@@ -6,13 +6,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     geminiForm.addEventListener("submit", async (event) => {
         event.preventDefault();
-        const userInput = geminiInput.value;
+        const userInput = geminiInput.value.trim();
 
-        // Display a loading message
+        if (!userInput) {
+            geminiResponse.innerHTML = `<p class="text-danger">Please enter a question.</p>`;
+            return;
+        }
+
         geminiResponse.innerHTML = `<p>Processing: "${userInput}"</p>`;
 
         try {
-            // Send the input to the Gemini backend and fetch the response
             const response = await fetch("/gemini/respond", {
                 method: "POST",
                 headers: {
@@ -25,7 +28,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const data = await response.json();
                 geminiResponse.innerHTML = `<p><strong>Gemini:</strong> ${data.response}</p>`;
             } else {
-                geminiResponse.innerHTML = `<p class="text-danger">Error: Unable to fetch response from Gemini.</p>`;
+                geminiResponse.innerHTML = `<p class="text-danger">Error: Unable to fetch Gemini response.</p>`;
             }
         } catch (error) {
             geminiResponse.innerHTML = `<p class="text-danger">Error: ${error.message}</p>`;
